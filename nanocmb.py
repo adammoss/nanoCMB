@@ -864,6 +864,18 @@ def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
 # to get transfer functions, then integrate over k for Cℓ.
 # ============================================================
 
+# Worker functions for multiprocessing (must be top-level for pickling)
+_pool_bg = _pool_thermo = _pool_pgrid = _pool_tau_out = _pool_kw = None
+
+def _pool_init(bg, thermo, pgrid, tau_out, kw):
+    global _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out, _pool_kw
+    _pool_bg, _pool_thermo, _pool_pgrid = bg, thermo, pgrid
+    _pool_tau_out, _pool_kw = tau_out, kw
+
+def _pool_solve_k(k):
+    return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out, **_pool_kw)
+
+
 def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
@@ -936,16 +948,23 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
 
     if not _cache_hit:
         print("Evolving perturbations...")
-        sources_j0 = np.zeros((nk, ntau))
-        sources_j1 = np.zeros((nk, ntau))
-        sources_j2 = np.zeros((nk, ntau))
-        sources_E = np.zeros((nk, ntau))
-        for ik, kval in enumerate(k_arr):
-            if (ik + 1) % 20 == 0 or ik == 0:
-                print(f"  k={kval:.4f} Mpc⁻¹ ({ik+1}/{nk})")
-            ode_kw = {'ode_rtol': 1e-5} if fast else {}
-            sources_j0[ik], sources_j1[ik], sources_j2[ik], sources_E[ik] = \
-                evolve_k(kval, bg, thermo, pgrid, tau_out, **ode_kw)
+        ode_kw = {'ode_rtol': 1e-5} if fast else {}
+        _args = (bg, thermo, pgrid, tau_out, ode_kw)
+
+        try:
+            from multiprocessing import Pool, cpu_count
+            ncpu = cpu_count()
+            print(f"  Using {ncpu} cores")
+            with Pool(ncpu, initializer=_pool_init, initargs=_args) as pool:
+                results = pool.map(_pool_solve_k, k_arr)
+        except (ImportError, OSError):
+            results = [evolve_k(k, bg, thermo, pgrid, tau_out, **ode_kw) for k in k_arr]
+
+        sources_j0 = np.array([r[0] for r in results])
+        sources_j1 = np.array([r[1] for r in results])
+        sources_j2 = np.array([r[2] for r in results])
+        sources_E = np.array([r[3] for r in results])
+
         if source_cache is not None:
             np.savez(source_cache, k_arr=k_arr, tau_out=tau_out,
                      sources_j0=sources_j0, sources_j1=sources_j1,
@@ -991,12 +1010,13 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
             np.arange(2000, ell_max + 1, 30),
         ]))
     else:
+        # ~130 ℓ-values: dense at low ℓ (narrow peaks), step ~25 at high ℓ
+        # (CAMB uses ~70 with spline templates; we use more to compensate)
         ells_compute = np.unique(np.concatenate([
-            np.arange(2, 50),
-            np.arange(50, 200, 2),
-            np.arange(200, 1200, 4),
-            np.arange(1200, 2000, 8),
-            np.arange(2000, ell_max + 1, 15),
+            np.arange(2, 30, 1),
+            np.arange(30, 80, 3),
+            np.arange(80, 200, 5),
+            np.arange(200, ell_max + 1, 25),
         ]))
     ells_compute = ells_compute[ells_compute <= ell_max]
     nell = len(ells_compute)
