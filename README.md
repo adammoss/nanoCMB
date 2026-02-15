@@ -7,12 +7,10 @@ Computes the TT, EE, and TE angular power spectra for flat LCDM cosmologies from
 ## Quick start
 
 ```bash
-# Full mode (~15 min, sub-percent accuracy)
 python nanocmb.py
-
-# Fast mode (~1 min, few-percent accuracy)
-python nanocmb.py --fast
 ```
+
+Runs in under a minute on a modern multi-core machine (thread-parallel LOS integration + multiprocess ODE evolution).
 
 Output is saved to `nanocmb_output.npz` with arrays `ells`, `DlTT`, `DlEE`, `DlTE` (D_l in muK^2).
 

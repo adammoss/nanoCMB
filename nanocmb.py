@@ -19,6 +19,7 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 """
 
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from scipy import integrate, interpolate, special
 
 try:
@@ -851,21 +852,13 @@ def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out, **_pool_kw)
 
 
-def compute_cls(bg, thermo, p, source_cache=None, fast=False):
+def compute_cls(bg, thermo, p):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
     evolve the Boltzmann hierarchy and extract source functions. Then for
     each multipole ℓ, we convolve with j_ℓ(k(τ₀−τ)) and integrate over k.
-
-    If source_cache is set, source functions are saved after ODE evolution
-    and reloaded on subsequent runs (skipping the expensive ODE step).
-    Set source_cache=None to disable caching.
-
-    fast=True uses ~3× fewer k-modes and coarser ℓ sampling (~1 min).
     """
-    if source_cache is None:
-        source_cache = '_source_cache_fast.npz' if fast else '_source_cache.npz'
     print("Setting up perturbation grid...")
     pgrid = setup_perturbation_grid(bg, thermo)
     tau0 = bg['tau0']
@@ -873,98 +866,64 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
     tau_early = np.linspace(1.0, tau_star - 100, 50)
-    if fast:
-        tau_rec = np.linspace(tau_star - 100, tau_star + 200, 400)
-        tau_late = np.linspace(tau_star + 200, tau0 - 10, 50)
-    else:
-        tau_rec = np.linspace(tau_star - 100, tau_star + 200, 400)
-        tau_late = np.linspace(tau_star + 200, tau0 - 10, 100)
+    tau_rec = np.linspace(tau_star - 100, tau_star + 200, 400)
+    tau_late = np.linspace(tau_star + 200, tau0 - 10, 100)
     tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late]))
     tau_out = tau_out[(tau_out > 0.5) & (tau_out < tau0 - 1)]
     ntau = len(tau_out)
-    print(f"  {ntau} output time steps{' (fast)' if fast else ''}")
+    print(f"  {ntau} output time steps")
 
     # --- k-sampling ---
     k_min = 0.5e-4
     k_max = 0.45
 
-    if fast:
-        k_low = np.logspace(np.log10(k_min), np.log10(0.008), 10)
-        k_mid = np.linspace(0.008, 0.25, 80)
-        k_high = np.linspace(0.25, k_max, 20)
-    else:
-        # The ODE grid only needs to resolve the acoustic pattern in source functions
-        # (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). The finer k-grid for Bessel oscillation
-        # resolution is handled by interpolation below. ~200 modes gives >10 pts/oscillation.
-        k_low = np.logspace(np.log10(k_min), np.log10(0.008), 20)
-        k_mid = np.linspace(0.008, 0.25, 150)
-        k_high = np.linspace(0.25, k_max, 40)
+    # The ODE grid only needs to resolve the acoustic pattern in source functions
+    # (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). The finer k-grid for Bessel oscillation
+    # resolution is handled by interpolation below. ~200 modes gives >10 pts/oscillation.
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), 20)
+    k_mid = np.linspace(0.008, 0.25, 150)
+    k_high = np.linspace(0.25, k_max, 40)
     k_arr = np.unique(np.concatenate([k_low, k_mid, k_high]))
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
 
     # --- Evolve all k modes and store source functions ---
-    _cache_hit = False
-    if source_cache is not None:
-        try:
-            _c = np.load(source_cache)
-            if (_c['k_arr'].shape == k_arr.shape and
-                    np.allclose(_c['k_arr'], k_arr) and
-                    _c['tau_out'].shape == tau_out.shape and
-                    np.allclose(_c['tau_out'], tau_out)):
-                sources_j0 = _c['sources_j0']
-                sources_j1 = _c['sources_j1']
-                sources_j2 = _c['sources_j2']
-                sources_E = _c['sources_E']
-                _cache_hit = True
-                print(f"Loaded cached source functions from {source_cache}")
-        except (FileNotFoundError, KeyError):
-            pass
+    print("Evolving perturbations...")
+    _args = (bg, thermo, pgrid, tau_out, {})
 
-    if not _cache_hit:
-        print("Evolving perturbations...")
-        ode_kw = {'ode_rtol': 1e-5} if fast else {}
-        _args = (bg, thermo, pgrid, tau_out, ode_kw)
+    # Warmup JIT (no-op without numba) before forking workers
+    _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
+                   np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
+                             bg['grhob'], bg['grhov']]),
+                   pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
+                   pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
 
-        # Warmup JIT (no-op without numba) before forking workers
-        _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
-                       np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
-                                 bg['grhob'], bg['grhov']]),
-                       pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
-                       pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
+    try:
+        from multiprocessing import Pool, cpu_count
+        ncpu = cpu_count()
+        print(f"  Using {ncpu} cores")
+        with Pool(ncpu, initializer=_pool_init, initargs=_args) as pool:
+            results = pool.map(_pool_solve_k, k_arr)
+    except (ImportError, OSError):
+        results = [evolve_k(k, bg, thermo, pgrid, tau_out) for k in k_arr]
 
-        try:
-            from multiprocessing import Pool, cpu_count
-            ncpu = cpu_count()
-            print(f"  Using {ncpu} cores")
-            with Pool(ncpu, initializer=_pool_init, initargs=_args) as pool:
-                results = pool.map(_pool_solve_k, k_arr)
-        except (ImportError, OSError):
-            results = [evolve_k(k, bg, thermo, pgrid, tau_out, **ode_kw) for k in k_arr]
-
-        sources_j0 = np.array([r[0] for r in results])
-        sources_j1 = np.array([r[1] for r in results])
-        sources_j2 = np.array([r[2] for r in results])
-        sources_E = np.array([r[3] for r in results])
-
-        if source_cache is not None:
-            np.savez(source_cache, k_arr=k_arr, tau_out=tau_out,
-                     sources_j0=sources_j0, sources_j1=sources_j1,
-                     sources_j2=sources_j2, sources_E=sources_E)
-            print(f"Saved source cache to {source_cache}")
+    sources_j0 = np.array([r[0] for r in results])
+    sources_j1 = np.array([r[1] for r in results])
+    sources_j2 = np.array([r[2] for r in results])
+    sources_E = np.array([r[3] for r in results])
 
     # --- Interpolate source functions to finer k-grid ---
     # Source functions are smooth in k, but the transfer function Δ_ℓ(k)
     # oscillates rapidly due to Bessel function ringing. A fine k-grid is
     # needed for accurate ∫|Δ|² d(ln k) integration (CAMB uses ~3000 k-pts).
     # Interpolate sources from the ODE grid to a ~5× denser grid.
-    nk_fine = 3000 if not fast else 600
+    nk_fine = 3000
     # Start dense linear spacing at k=0.002 (covers ℓ>30 peak contributions)
     k_lin_start = 0.002
-    n_log = 40 if not fast else 15
+    n_log = 40
     k_fine = np.unique(np.concatenate([
         np.logspace(np.log10(k_arr[0]), np.log10(k_lin_start), n_log),
-        np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log if not fast else nk_fine - n_log),
+        np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log),
     ]))
     nk_fine = len(k_fine)
     lnk_ode = np.log(k_arr)
@@ -983,23 +942,14 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     # --- Line-of-sight integration ---
     print("Computing transfer functions (line-of-sight integration)...")
     ell_max = 2500
-    if fast:
-        ells_compute = np.unique(np.concatenate([
-            np.arange(2, 50, 3),
-            np.arange(50, 200, 5),
-            np.arange(200, 1200, 10),
-            np.arange(1200, 2000, 20),
-            np.arange(2000, ell_max + 1, 30),
-        ]))
-    else:
-        # ~130 ℓ-values: dense at low ℓ (narrow peaks), step ~25 at high ℓ
-        # (CAMB uses ~70 with spline templates; we use more to compensate)
-        ells_compute = np.unique(np.concatenate([
-            np.arange(2, 30, 1),
-            np.arange(30, 80, 3),
-            np.arange(80, 200, 5),
-            np.arange(200, ell_max + 1, 25),
-        ]))
+    # ~130 ℓ-values: dense at low ℓ (narrow peaks), step ~25 at high ℓ
+    # (CAMB uses ~70 with spline templates; we use more to compensate)
+    ells_compute = np.unique(np.concatenate([
+        np.arange(2, 30, 1),
+        np.arange(30, 80, 3),
+        np.arange(80, 200, 5),
+        np.arange(200, ell_max + 1, 25),
+    ]))
     ells_compute = ells_compute[ells_compute <= ell_max]
     nell = len(ells_compute)
     print(f"  {nell} ℓ-values from {ells_compute[0]} to {ells_compute[-1]}")
@@ -1015,14 +965,9 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     # x_2d[ik, itau] = k * chi — precompute once (full grid for reference)
     x_2d_full = k_fine[:, None] * chi_arr[None, :]   # shape (nk_fine, ntau)
 
-    for il, ell in enumerate(ells_compute):
-        if (il + 1) % 20 == 0 or il == 0:
-            print(f"  ℓ={ell} ({il+1}/{nell})")
-
-        # Restrict k-range to where j_ℓ(kχ) is nonzero. The spherical Bessel
-        # function j_ℓ(x) is exponentially small for x < ℓ − O(ℓ^{1/3}) and
-        # oscillates with decaying amplitude for x > ℓ. Combined with the
-        # upper k-cutoff, this typically reduces the array by ~80%.
+    def _compute_ell_transfer(il, ell):
+        """Compute transfer functions for a single ell (thread-safe: writes to distinct row)."""
+        # Restrict k-range to where j_ℓ(kχ) is nonzero
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
         k_hi = (ell + 1000) / chi_star if chi_star > 0 else k_fine[-1]
@@ -1035,9 +980,6 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
         s_j2 = src_fine_j2[ik_lo:ik_hi, :]
         s_E = src_fine_E[ik_lo:ik_hi, :]
 
-        # Compute spherical Bessel functions using cylindrical Bessel J_{ℓ+½}
-        # j_ℓ(x) = √(π/(2x)) × J_{ℓ+½}(x)  — much faster than spherical_jn
-        # which must compute all orders 0..ℓ per point (Python-level loop).
         nu = ell + 0.5
         ell_factor = ell * (ell + 1)
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -1045,13 +987,11 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
         Jnu = special.jv(nu, x_2d)
         jl = prefac * Jnu
 
-        # j_ℓ'(x) = (ℓ/x) j_ℓ(x) − j_{ℓ+1}(x)   (recurrence relation)
         Jnu1 = special.jv(nu + 1, x_2d)
         jl_next = prefac * Jnu1
         with np.errstate(divide='ignore', invalid='ignore'):
             jl_d = np.where(x_2d > 1e-30, ell / x_2d * jl - jl_next, 0.0)
 
-        # j_ℓ''(x) from the spherical Bessel ODE: x²j'' + 2xj' + (x²−ℓ(ℓ+1))j = 0
         with np.errstate(divide='ignore', invalid='ignore'):
             jl_dd = np.where(
                 x_2d > 1e-30,
@@ -1059,12 +999,18 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
                 0.0,
             )
 
-        # Temperature: three-channel integral  ∫ dτ [S₀·jₗ + S₁·jₗ' + S₂·jₗ'']
         integrand_T = s_j0 * jl + s_j1 * jl_d + s_j2 * jl_dd
-        # E-mode: single jₗ channel
         integrand_E = s_E * jl
         Delta_T[il, ik_lo:ik_hi] = np.trapezoid(integrand_T, tau_out, axis=1)
         Delta_E[il, ik_lo:ik_hi] = np.trapezoid(integrand_E, tau_out, axis=1)
+
+    with ThreadPoolExecutor() as pool:
+        futures = [pool.submit(_compute_ell_transfer, il, ell)
+                   for il, ell in enumerate(ells_compute)]
+        for i, f in enumerate(futures):
+            f.result()
+            if (i + 1) % 20 == 0 or i == 0:
+                print(f"  ℓ={ells_compute[i]} ({i+1}/{nell})")
 
     # --- Power spectrum assembly ---
     # C_ℓ^XY = 4π ∫ d(ln k) P(k) Δ_ℓ^X(k) Δ_ℓ^Y(k)
@@ -1075,43 +1021,19 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     # Primordial power spectrum: P(k) = A_s × (k/k_pivot)^(n_s - 1)
     Pk = A_s * (k_fine / k_pivot)**(n_s - 1.0)
 
-    Cl_TT = np.zeros(nell)
-    Cl_EE = np.zeros(nell)
-    Cl_TE = np.zeros(nell)
-    for il, ell in enumerate(ells_compute):
-        # E-mode normalisation: ctnorm = (ℓ²−1)(ℓ+2)ℓ
-        ctnorm = (ell**2 - 1.0) * (ell + 2) * ell
+    # k-cutoff already applied in LOS step (Delta values are zero beyond cutoff),
+    # so we can integrate over the full lnk_fine grid directly.
+    Cl_TT = np.trapezoid(Pk[None, :] * Delta_T**2, lnk_fine, axis=1)
+    Cl_EE = np.trapezoid(Pk[None, :] * Delta_E**2, lnk_fine, axis=1)
+    Cl_TE = np.trapezoid(Pk[None, :] * Delta_T * Delta_E, lnk_fine, axis=1)
 
-        # Limit k-integration: k_max = (ℓ + 1000) / chi_star
-        # This allows ~160 Bessel oscillations past the peak before cutoff,
-        # enough for accurate cancellation but suppresses noise floor.
-        k_cut = (ell + 1000) / chi_star
-        k_mask = k_fine <= k_cut
-        if not k_mask.all():
-            lnk_use = lnk_fine[k_mask]
-            DT = Delta_T[il, k_mask]
-            DE = Delta_E[il, k_mask]
-            Pk_use = Pk[k_mask]
-        else:
-            lnk_use = lnk_fine
-            DT = Delta_T[il, :]
-            DE = Delta_E[il, :]
-            Pk_use = Pk
-
-        # Trapezoidal integration in ln k
-        integrand_TT = Pk_use * DT**2
-        integrand_EE = Pk_use * DE**2
-        integrand_TE = Pk_use * DT * DE
-        Cl_TT[il] = np.trapezoid(integrand_TT, lnk_use)
-        Cl_EE[il] = np.trapezoid(integrand_EE, lnk_use)
-        Cl_TE[il] = np.trapezoid(integrand_TE, lnk_use)
-
-        # Normalise: multiply by 4π × ℓ(ℓ+1)/(2π)
-        norm = 4.0 * np.pi  # the 4π from the k-integral
-        fac = ell * (ell + 1) / (2.0 * np.pi)
-        Cl_TT[il] *= norm * fac
-        Cl_EE[il] *= norm * fac * ctnorm
-        Cl_TE[il] *= norm * fac * np.sqrt(ctnorm)
+    # Normalise: D_ℓ = ℓ(ℓ+1)C_ℓ/(2π), with 4π from the k-integral
+    ells_f = ells_compute.astype(float)
+    norm = 4.0 * np.pi * ells_f * (ells_f + 1) / (2.0 * np.pi)
+    ctnorm = (ells_f**2 - 1.0) * (ells_f + 2) * ells_f  # E-mode normalisation
+    Cl_TT *= norm
+    Cl_EE *= norm * ctnorm
+    Cl_TE *= norm * np.sqrt(ctnorm)
 
     # Convert from dimensionless (ΔT/T)² to μK²
     T0_muK = p['T_cmb'] * 1e6  # CMB temperature in μK
@@ -1145,9 +1067,6 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
 # ============================================================
 
 def main():
-    import sys
-    fast = '--fast' in sys.argv
-
     bg = compute_background(params)
     print("=== nanoCMB Background Cosmology ===")
     print(f"H₀ = {bg['H0'] * c_km_s:.2f} km/s/Mpc")
@@ -1161,7 +1080,7 @@ def main():
 
     # Compute CMB angular power spectra
     print("\n=== Computing Power Spectra ===")
-    result = compute_cls(bg, thermo, params, fast=fast)
+    result = compute_cls(bg, thermo, params)
 
     # Print peak values as sanity check
     ells = result['ells']
