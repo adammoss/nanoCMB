@@ -297,6 +297,94 @@ try:
 except ImportError as e:
     print(f"matplotlib not available ({e}), skipping plots")
 
+# --- Transfer function comparison ---
+try:
+    if 'Delta_T' in data and 'k_fine' in data:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        Delta_T_nano = data['Delta_T']
+        Delta_E_nano = data['Delta_E']
+        k_fine_nano = data['k_fine']
+        ells_compute = data['ells_compute']
+
+        trans = results.get_cmb_transfer_data()
+
+        chi_max = bg['tau0']  # τ₀ ≈ χ_max
+        chi_star = bg['tau0'] - thermo['tau_star']
+
+        # Find ℓ values on both grids (exact match or within 1)
+        common_ells = []
+        for ell_c in trans.L:
+            il_n = np.argmin(np.abs(ells_compute - ell_c))
+            if abs(ells_compute[il_n] - ell_c) == 0:
+                common_ells.append(int(ell_c))
+        common_ells = np.array(common_ells)
+
+        # Pick a representative spread: ~6 values across the range
+        targets = [2, 10, 100, 500, 1000, 2000]
+        ells_show = []
+        for t in targets:
+            idx = np.argmin(np.abs(common_ells - t))
+            ell_pick = common_ells[idx]
+            if ell_pick not in ells_show:
+                ells_show.append(ell_pick)
+        print(f"Transfer function ℓ values (exact match): {ells_show}")
+
+        for spec, Delta_nano, src_ix, name in [
+            ('TT', Delta_T_nano, 0, 'T'),
+            ('EE', Delta_E_nano, 1, 'E'),
+        ]:
+            fig, axes = plt.subplots(2, len(ells_show), figsize=(4*len(ells_show), 7),
+                                      gridspec_kw={'height_ratios': [3, 1]})
+            for ic, ell in enumerate(ells_show):
+                il_nano = np.argmin(np.abs(ells_compute - ell))
+                ell_nano = ells_compute[il_nano]
+                delta_nano = Delta_nano[il_nano, :]
+
+                il_camb = np.argmin(np.abs(trans.L - ell))
+                ell_camb = trans.L[il_camb]
+                delta_camb = trans.delta_p_l_k[src_ix, il_camb, :]
+                q_camb = trans.q
+
+                # k range where Δ_ℓ(k) is non-negligible
+                x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
+                k_lo = max(1e-5, x_lo / chi_max * 0.5)
+                k_hi = min(0.5, (ell + 1000) / chi_star * 1.2)
+
+                ax = axes[0, ic]
+                ax.semilogx(q_camb, delta_camb, 'k-', alpha=0.7, lw=1, label='CAMB')
+                ax.semilogx(k_fine_nano, delta_nano, 'r--', alpha=0.7, lw=1, label='nanoCMB')
+                ax.set_xlim(k_lo, k_hi)
+                ax.set_title(f'{name}  $\\ell={ell}$', fontsize=11)
+                ax.set_xticklabels([])
+                if ic == 0:
+                    ax.legend(fontsize=8)
+
+                ax = axes[1, ic]
+                delta_camb_interp = np.interp(k_fine_nano, q_camb, delta_camb)
+                diff = delta_nano - delta_camb_interp
+                ax.semilogx(k_fine_nano, diff, 'r-', alpha=0.6, lw=0.8)
+                ax.axhline(0, color='k', ls='--', lw=0.5)
+                ax.set_xlim(k_lo, k_hi)
+                ax.set_ylabel('diff', fontsize=9)
+                ax.set_xlabel(r'$k$ [Mpc$^{-1}$]')
+
+            fig.suptitle(f'{spec} Transfer Functions $\\Delta_\\ell(k)$', fontsize=14)
+            fig.tight_layout()
+            fname = f'plots/transfer_{spec}.png'
+            fig.savefig(fname, dpi=150)
+            plt.close(fig)
+            print(f"Saved {fname}")
+    else:
+        print("Transfer functions not in npz — re-run nanocmb.py to generate")
+
+except Exception as e:
+    import traceback
+    print(f"Transfer function comparison failed: {e}")
+    traceback.print_exc()
+
 # --- Perturbation evolution comparison ---
 try:
     print("Computing perturbation evolution comparison...")

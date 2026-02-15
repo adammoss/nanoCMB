@@ -24,7 +24,7 @@ from scipy import integrate, interpolate, special
 
 try:
     from numba import njit
-    _jit = njit(cache=True)
+    _jit = njit(cache=False)
 except ImportError:
     _jit = lambda f: f
 
@@ -1244,7 +1244,9 @@ def main():
     print(f"TE range: [{np.min(DlTE):.3f}, {np.max(DlTE):.3f}]")
 
     # Save output
-    np.savez('nanocmb_output.npz', ells=ells, DlTT=DlTT, DlEE=DlEE, DlTE=DlTE)
+    np.savez('nanocmb_output.npz', ells=ells, DlTT=DlTT, DlEE=DlEE, DlTE=DlTE,
+             Delta_T=result['Delta_T'], Delta_E=result['Delta_E'],
+             k_fine=result['k_fine'], ells_compute=result['ells_compute'])
 
 
 if __name__ == '__main__':
