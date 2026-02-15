@@ -131,10 +131,10 @@ def hubble(a, bg):
 
 def conformal_time(a, bg):
     """Conformal time η(a) = ∫₀ᵃ da'/(a'²H) in Mpc."""
-    if np.isscalar(a):
-        result, _ = integrate.quad(dtauda, 0, a, args=(bg,), limit=100, epsrel=1e-8)
-        return result
-    return np.array([conformal_time(ai, bg) for ai in a])
+    a = np.atleast_1d(a)
+    result = np.array([integrate.quad(dtauda, 0, ai, args=(bg,), limit=100, epsrel=1e-8)[0]
+                       for ai in a])
+    return result.squeeze()
 
 
 def sound_speed_squared(a, bg):
@@ -519,11 +519,8 @@ def compute_thermodynamics(bg, p):
     opacity = xe_final * bg['akthom'] / a_arr**2
 
     # Optical depth: τ(η) = ∫_η^η₀ κ̇ dη' (integrated from η to today)
-    # Integrate from the end (z=0, η=η₀) backwards
-    tau_optical = np.zeros_like(tau_arr)
-    for i in range(len(tau_arr) - 2, -1, -1):
-        deta = tau_arr[i+1] - tau_arr[i]
-        tau_optical[i] = tau_optical[i+1] + 0.5 * (opacity[i] + opacity[i+1]) * deta
+    tau_optical = -np.flip(integrate.cumulative_trapezoid(
+        np.flip(opacity), np.flip(tau_arr), initial=0))
 
     # Visibility function: g(η) = κ̇ exp(-τ)
     exptau = np.exp(-tau_optical)
@@ -640,25 +637,6 @@ def setup_perturbation_grid(bg, thermo):
         'adotrad': adotrad,
         'grho_rad': grho_rad,
         'tau0': bg['tau0'],
-    }
-
-
-def get_bg_at_tau(tau, bg, pgrid):
-    """Compute background quantities at conformal time τ for source functions."""
-    a = float(pgrid['a_of_tau'](tau))
-    a2 = a * a
-    grhog_t = bg['grhog'] / a2
-    grhor_t = bg['grhornomass'] / a2
-    grhoc_t = bg['grhoc'] / a
-    grhob_t = bg['grhob'] / a
-    grho_a2 = grhog_t + grhor_t + grhoc_t + grhob_t + bg['grhov'] * a2
-    adotoa = np.sqrt(grho_a2 / 3.0)
-    opacity = max(float(pgrid['opacity_interp'](tau)), 1e-30)
-
-    return {
-        'a': a, 'grhog_t': grhog_t, 'grhor_t': grhor_t,
-        'grhoc_t': grhoc_t, 'grhob_t': grhob_t,
-        'adotoa': adotoa, 'opacity': opacity,
     }
 
 
@@ -863,10 +841,14 @@ def compute_source_functions(tau, y, k, bg, pgrid, thermo):
     and j_ℓ'' (quadrupole). Returns the coefficients for each channel plus
     the E-mode source.
     """
-    B = get_bg_at_tau(tau, bg, pgrid)
-    a, adotoa, opacity = B['a'], B['adotoa'], B['opacity']
-    grhog_t, grhor_t = B['grhog_t'], B['grhor_t']
-    grhoc_t, grhob_t = B['grhoc_t'], B['grhob_t']
+    a = float(pgrid['a_of_tau'](tau))
+    a2 = a * a
+    grhog_t = bg['grhog'] / a2
+    grhor_t = bg['grhornomass'] / a2
+    grhoc_t = bg['grhoc'] / a
+    grhob_t = bg['grhob'] / a
+    adotoa = np.sqrt((grhog_t + grhor_t + grhoc_t + grhob_t + bg['grhov'] * a2) / 3.0)
+    opacity = max(float(pgrid['opacity_interp'](tau)), 1e-30)
     k2 = k * k
 
     # State variables
@@ -958,16 +940,11 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     ntau = len(tau_out)
     if not sol.success:
         print(f"  Warning: ODE solver failed for k={k:.4e}: {sol.message}")
-        z = np.zeros(ntau)
-        return z, z.copy(), z.copy(), z.copy()
+        return tuple(np.zeros(ntau) for _ in range(4))
 
     # --- Extract source function building blocks at each time step ---
-    ISW_arr = np.zeros(ntau)
-    monopole_arr = np.zeros(ntau)
-    sigma_plus_vb_arr = np.zeros(ntau)
-    vis_arr = np.zeros(ntau)
-    polter_arr = np.zeros(ntau)
-    src_E = np.zeros(ntau)
+    ISW_arr, monopole_arr, sigma_plus_vb_arr, vis_arr, polter_arr, src_E = \
+        (np.zeros(ntau) for _ in range(6))
     for i, tau in enumerate(tau_out):
         (ISW_arr[i], monopole_arr[i], sigma_plus_vb_arr[i],
          vis_arr[i], polter_arr[i], src_E[i]) = \
@@ -1173,9 +1150,8 @@ def compute_cls(bg, thermo, p):
 
     # k-cutoff already applied in LOS step (Delta values are zero beyond cutoff),
     # so we can integrate over the full lnk_fine grid directly.
-    Cl_TT = np.trapezoid(Pk[None, :] * Delta_T**2, lnk_fine, axis=1)
-    Cl_EE = np.trapezoid(Pk[None, :] * Delta_E**2, lnk_fine, axis=1)
-    Cl_TE = np.trapezoid(Pk[None, :] * Delta_T * Delta_E, lnk_fine, axis=1)
+    Cl_TT, Cl_EE, Cl_TE = [np.trapezoid(Pk * d, lnk_fine, axis=1)
+                            for d in (Delta_T**2, Delta_E**2, Delta_T * Delta_E)]
 
     # Normalise: D_ℓ = ℓ(ℓ+1)C_ℓ/(2π), with 4π from the k-integral
     ells_f = ells_compute.astype(float)
@@ -1186,17 +1162,15 @@ def compute_cls(bg, thermo, p):
     Cl_TE *= norm * np.sqrt(ctnorm)
 
     # Convert from dimensionless (ΔT/T)² to μK²
-    T0_muK = p['T_cmb'] * 1e6  # CMB temperature in μK
-    T0_muK2 = T0_muK**2
+    T0_muK2 = (p['T_cmb'] * 1e6)**2
     Cl_TT *= T0_muK2
     Cl_EE *= T0_muK2
     Cl_TE *= T0_muK2
 
     # Interpolate to all integer ℓ using cubic spline (captures peak structure)
     ells_all = np.arange(2, ell_max + 1)
-    Dl_TT = interpolate.CubicSpline(ells_compute, Cl_TT)(ells_all)
-    Dl_EE = interpolate.CubicSpline(ells_compute, Cl_EE)(ells_all)
-    Dl_TE = interpolate.CubicSpline(ells_compute, Cl_TE)(ells_all)
+    Dl_TT, Dl_EE, Dl_TE = [interpolate.CubicSpline(ells_compute, cl)(ells_all)
+                            for cl in (Cl_TT, Cl_EE, Cl_TE)]
 
     print("Done!")
     return {
