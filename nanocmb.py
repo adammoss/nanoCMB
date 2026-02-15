@@ -287,7 +287,6 @@ def compute_recombination(bg):
     # At z > 1600 we add f_He (singly ionised helium), then helium is neutral
     xe_total = xe_arr.copy()
     xe_total[:saha_switch_idx] += f_He  # He contributes one electron per He atom above switch
-    xe_total[saha_switch_idx:] += 0     # He recombined by this point
 
     return z_arr, xe_total
 
@@ -492,38 +491,21 @@ def setup_perturbation_grid(bg, thermo):
 
 
 def get_bg_at_tau(tau, bg, pgrid):
-    """Compute all background quantities at conformal time τ."""
+    """Compute background quantities at conformal time τ for source functions."""
     a = float(pgrid['a_of_tau'](tau))
     a2 = a * a
-
-    # Species densities (8πGρa⁴ convention, divided by a to get 8πGρa² etc.)
-    grhog_t = bg['grhog'] / a2               # photon: grho_g/a²
-    grhor_t = bg['grhornomass'] / a2          # massless neutrino: grho_ν/a²
-    grhoc_t = bg['grhoc'] / a                 # CDM: grho_c/a
-    grhob_t = bg['grhob'] / a                 # baryon: grho_b/a
-
-    # Expansion rate ȧ/a = H
+    grhog_t = bg['grhog'] / a2
+    grhor_t = bg['grhornomass'] / a2
+    grhoc_t = bg['grhoc'] / a
+    grhob_t = bg['grhob'] / a
     grho_a2 = grhog_t + grhor_t + grhoc_t + grhob_t + bg['grhov'] * a2
-    adotoa = np.sqrt(grho_a2 / 3.0)          # = aH (i.e. ȧ/a in conformal time)
-
-    # Opacity κ̇ = x_e × n_H × σ_T / a²
-    opacity = float(pgrid['opacity_interp'](tau))
-    opacity = max(opacity, 1e-30)  # prevent division by zero at late times
-
-    # Baryon-photon ratio: R = 3ρ_b/(4ρ_γ) = (3/4)(grho_b a)/(grho_g)
-    # In terms of _t quantities: pb43 = (4/3) grhog_t / grhob_t
-    # photbar = grhog_t / grhob_t, and pb43 = 4/3 * photbar
-    photbar = grhog_t / grhob_t
-    pb43 = 4.0 / 3.0 * photbar       # = (4ρ_γ)/(3ρ_b)
-    R = 1.0 / pb43                     # = 3ρ_b/(4ρ_γ)
+    adotoa = np.sqrt(grho_a2 / 3.0)
+    opacity = max(float(pgrid['opacity_interp'](tau)), 1e-30)
 
     return {
-        'a': a, 'a2': a2,
-        'grhog_t': grhog_t, 'grhor_t': grhor_t,
+        'a': a, 'grhog_t': grhog_t, 'grhor_t': grhor_t,
         'grhoc_t': grhoc_t, 'grhob_t': grhob_t,
-        'adotoa': adotoa,
-        'opacity': opacity,
-        'photbar': photbar, 'pb43': pb43, 'R': R,
+        'adotoa': adotoa, 'opacity': opacity,
     }
 
 
@@ -542,7 +524,6 @@ def adiabatic_ics(k, tau_start, bg, pgrid):
     grho_rad = pgrid['grho_rad']
     # Neutrino fraction of radiation
     Rv = bg['grhornomass'] / grho_rad     # ρ_ν/(ρ_ν + ρ_γ)
-    Rg = 1.0 - Rv                          # ρ_γ/(ρ_ν + ρ_γ)
     Rp15 = 4 * Rv + 15                     # convenience combination
 
     # Matter-radiation ratio parameter (small in radiation era)
@@ -719,14 +700,6 @@ def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
                           - (LMAXNR + 1) * cothxor * y[IX_R + LMAXNR])
 
     return dy
-
-
-def boltzmann_derivs(tau, y, k, bg, pgrid, thermo):
-    """Wrapper: extract spline arrays from pgrid dicts, call _boltzmann_rhs."""
-    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'], bg['grhob'], bg['grhov']])
-    return _boltzmann_rhs(tau, y, k, bg5,
-                          pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
-                          pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
 
 
 def compute_source_functions(tau, y, k, bg, pgrid, thermo):
@@ -1102,8 +1075,6 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
     # Primordial power spectrum: P(k) = A_s × (k/k_pivot)^(n_s - 1)
     Pk = A_s * (k_fine / k_pivot)**(n_s - 1.0)
 
-    lnk = lnk_fine
-
     Cl_TT = np.zeros(nell)
     Cl_EE = np.zeros(nell)
     Cl_TE = np.zeros(nell)
@@ -1117,12 +1088,12 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
         k_cut = (ell + 1000) / chi_star
         k_mask = k_fine <= k_cut
         if not k_mask.all():
-            lnk_use = lnk[k_mask]
+            lnk_use = lnk_fine[k_mask]
             DT = Delta_T[il, k_mask]
             DE = Delta_E[il, k_mask]
             Pk_use = Pk[k_mask]
         else:
-            lnk_use = lnk
+            lnk_use = lnk_fine
             DT = Delta_T[il, :]
             DE = Delta_E[il, :]
             Pk_use = Pk
