@@ -8,7 +8,7 @@ Approximations:
   - Flat geometry (K = 0)
   - Massless neutrinos only (no massive species)
   - Cosmological constant (w = -1 exactly)
-  - Simplified RECFAST recombination (Peebles equation with fudge factor)
+  - Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch)
   - No lensing, no tensors, no isocurvature modes
   - First-order tight-coupling approximation
 
@@ -157,131 +157,297 @@ def compute_background(p):
 # Then compute optical depth τ(η) and visibility function g(η).
 # ============================================================
 
-# Recombination constants
-E_ion_H = 13.605693122994  # eV, hydrogen ionisation energy
-E_21_H = 10.2              # eV, Lyman-alpha energy (2→1)
-lambda_alpha = 1.2157e-7   # Lyman-alpha wavelength (m)
-Lambda_2s = 8.2246          # Two-photon decay rate 2s→1s (s⁻¹)
-eV_to_K = 11604.518        # 1 eV in Kelvin
-eV_to_J = 1.602176634e-19  # 1 eV in Joules
-RECFAST_fudge = 1.006      # Fudge factor for Peebles equation (calibrated to minimise x_e residual vs CAMB/HyRec)
+# Recombination constants (full RECFAST, wavenumber notation matching CAMB)
+c_SI = c_km_s * 1e3                              # speed of light (m/s)
+
+# Atomic transition levels (wavenumber, m⁻¹)
+L_H_ion = 1.096787737e7                          # H ionization
+L_H_alpha = 8.225916453e6                        # H Lyman-alpha
+L_He1_ion = 1.98310772e7                         # HeI ionization
+L_He2_ion = 4.389088863e7                        # HeII ionization
+L_He_2s = 1.66277434e7                           # HeI 2¹S₀
+L_He_2p = 1.71134891e7                           # HeI 2¹P₁
+
+# Decay / transition rates
+Lambda_2s1s = 8.2245809                           # H 2s→1s two-photon (s⁻¹)
+Lambda_He = 51.3                                  # HeI 2s→1s two-photon (s⁻¹)
+A2P_s = 1.798287e9                                # HeI 2¹P₁→1¹S₀ Einstein A (s⁻¹)
+
+# Fudge factor (CAMB default with Hswitch Gaussians: 1.125)
+RECFAST_fudge = 1.125
+
+# Hswitch double-Gaussian K correction parameters
+AGauss1, AGauss2 = -0.14, 0.079
+zGauss1, zGauss2 = 7.28, 6.73
+wGauss1, wGauss2 = 0.18, 0.33
+
+# Derived constants
+CR = 2 * np.pi * m_e * k_B / h_P**2              # Saha coefficient (m⁻² K⁻¹)
+CB1 = h_P * c_SI * L_H_ion / k_B                 # H ionization energy / k_B (K)
+CB1_He1 = h_P * c_SI * L_He1_ion / k_B           # HeI ionization / k_B (K)
+CB1_He2 = h_P * c_SI * L_He2_ion / k_B           # HeII ionization / k_B (K)
+CDB = h_P * c_SI * (L_H_ion - L_H_alpha) / k_B   # H n=2 binding energy / k_B (K)
+CDB_He = h_P * c_SI * (L_He1_ion - L_He_2s) / k_B  # HeI (ion−2s) / k_B (K)
+CK = (1.0 / L_H_alpha)**3 / (8 * np.pi)          # λ_α³/(8π) (m³)
+CK_He = (1.0 / L_He_2p)**3 / (8 * np.pi)         # HeI equivalent (m³)
+CL = h_P * c_SI * L_H_alpha / k_B                 # Lyman-alpha energy / k_B (K)
+CL_He = h_P * c_SI * L_He_2s / k_B                # HeI 2s energy / k_B (K)
+Bfact = h_P * c_SI * (L_He_2p - L_He_2s) / k_B   # He 2P−2S splitting / k_B (K)
+a_rad = 4 * sigma_SB / c_SI                       # radiation constant (J/m³/K⁴)
+CT = (8.0 / 3.0) * (sigma_T / (m_e * c_SI)) * a_rad  # Compton cooling (s⁻¹ K⁻⁴)
 
 
 def compute_recombination(bg):
-    """Solve for ionisation history x_e(z) using simplified RECFAST.
+    """Solve ionisation history x_e(z) using full RECFAST.
 
-    Uses Saha equilibrium at high z (x_e > 0.99), then switches to the
-    Peebles equation — a rate equation for the effective 3-level hydrogen atom.
-    The key physics: recombination to the ground state produces a Lyman-continuum
-    photon that immediately reionises another atom, so net recombination only
-    proceeds through excited states (Case B) or two-photon decay from 2s.
+    Three-variable ODE for hydrogen ionisation (x_H), helium ionisation (x_He),
+    and matter temperature (T_mat). Uses Saha equilibrium at high z, switching
+    to ODEs as each species departs from equilibrium.
+
+    Regime switching (high z → low z):
+      z > 8000:  fully ionised (x_H=1, x_He=1, He doubly ionised)
+      5000–8000: He++ → He+ Saha
+      3500–5000: He singly ionised, H fully ionised
+      < 3500:    He+ → He0 Saha until x_He < 0.99, then He ODE
+                 H Saha until x_H < 0.99, then H Peebles ODE
     """
     T_cmb = bg['T_cmb']
     f_He = bg['f_He']
 
-    # Baryon number density today (m⁻³), needed for recombination rates
-    # n_b = n_H + n_He = n_H(1 + f_He)
-    # We need n_H in SI for rate calculations
+    # Present-day hydrogen number density (m⁻³)
     H100_SI = 100 * 1e3 / Mpc_in_m
     rho_crit_100 = 3 * H100_SI**2 / (8 * np.pi * G)
-    n_H_SI = (1 - bg['Y_He']) * (params['omega_b_h2'] * rho_crit_100) / m_H
+    Nnow = (1 - bg['Y_He']) * (params['omega_b_h2'] * rho_crit_100) / m_H
 
-    # Precompute temperature-independent quantities
-    # C_r = (2π m_e k_B / h²) — appears in Saha equation
-    C_r = 2 * np.pi * m_e * k_B / h_P**2       # m⁻² K⁻¹
+    # Cosmological parameters for dH/dz in T_mat equation
+    H0_SI = bg['H0'] * c_SI / Mpc_in_m
+    omega_m = (params['omega_b_h2'] + params['omega_c_h2']) / params['h']**2
+    a_eq = (bg['grhog'] + bg['grhornomass']) / (bg['grhoc'] + bg['grhob'])
+    z_eq = 1.0 / a_eq - 1.0
 
-    def saha_xe(z):
-        """Saha equilibrium ionisation fraction for hydrogen.
-        n_e n_p / n_H = (2πm_e k_B T)^(3/2) / h³ × exp(-E_ion/k_B T) / n_b
-        With x_e = n_e/(n_H + n_He) ≈ n_e/n_H for helium fully recombined.
-        """
+    def Hz_SI(z):
+        return hubble(1.0 / (1 + z), bg) * c_SI / Mpc_in_m
+
+    # --- Saha equations (CAMB convention: rhs absorbs (1+z)^3 into CR term) ---
+    def saha_He2(z):
+        """He++ → He+ Saha: returns total x_e per H atom."""
         T = T_cmb * (1 + z)
-        n_H = n_H_SI * (1 + z)**3
-        # Right-hand side of Saha equation
-        rhs = (1.0 / n_H) * (C_r * T)**1.5 * np.exp(-E_ion_H * eV_to_K / T)
-        # Solve x²/(1-x) = rhs → x = (-rhs + √(rhs² + 4rhs))/2
-        x_H = (-rhs + np.sqrt(rhs**2 + 4 * rhs)) / 2
-        return min(x_H, 1.0)
+        rhs = (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1_He2 / T) / Nnow
+        return 0.5 * (np.sqrt((rhs - 1 - f_He)**2
+                              + 4 * (1 + 2 * f_He) * rhs) - (rhs - 1 - f_He))
 
-    def peebles_rhs(z, x_H_arr):
-        """Right-hand side of the Peebles equation dx_H/dz.
-
-        The Peebles equation describes net recombination through excited states:
-        recombination to n=2 competes with photoionisation from n=2, with escape
-        of Lyman-alpha photons and two-photon decay providing the bottleneck.
-        """
-        x_H = float(x_H_arr[0]) if hasattr(x_H_arr, '__len__') else float(x_H_arr)
-        x_H = max(x_H, 1e-30)
+    def saha_He1(z):
+        """He+ → He0 Saha: returns x_He = n(He+)/n_He."""
         T = T_cmb * (1 + z)
-        n_H = n_H_SI * (1 + z)**3
-        Hz = hubble(1.0 / (1 + z), bg) * c_km_s * 1e3 / Mpc_in_m  # H(z) in s⁻¹
+        rhs = 4.0 * (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1_He1 / T) / Nnow
+        x0 = 0.5 * (np.sqrt((rhs - 1)**2 + 4 * (1 + f_He) * rhs) - (rhs - 1))
+        return min((x0 - 1.0) / f_He, 1.0)
 
-        # Case-B recombination coefficient α_B (Pequignot, Petitjean & Boisson 1991)
-        # Fit to recombination rate excluding captures to ground state
-        t4 = T / 1e4
-        alpha_B = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)  # m³/s
+    def saha_H(z):
+        """H Saha: returns x_H (assumes He contribution to n_e negligible)."""
+        T = T_cmb * (1 + z)
+        rhs = (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1 / T) / Nnow
+        return min(0.5 * (np.sqrt(rhs**2 + 4 * rhs) - rhs), 1.0)
 
-        # Photoionisation rate from n=2: β = α_B × (2πm_e k_B T/h²)^(3/2) × exp(-B₂/k_BT)
-        # where B₂ = E_ion/4 = 3.4 eV (binding energy of n=2)
-        beta = alpha_B * (C_r * T)**1.5 * np.exp(-E_ion_H * eV_to_K / (4 * T))
+    # --- RECFAST ODE right-hand side ---
+    def recfast_rhs(z, y, saha_H_mode=False):
+        """dy/dz for y = [x_H, x_He, T_mat]."""
+        x_H = max(y[0], 0.0)
+        x_He = max(y[1], 0.0)
+        T_mat = max(y[2], 0.5)
 
-        # Peebles K factor: K = λ_α³/(8πH(z))
-        # This encodes the cosmological redshifting rate of Lyman-alpha photons
-        K = lambda_alpha**3 / (8 * np.pi * Hz)
+        if saha_H_mode:
+            x_H = saha_H(z)
 
-        # Lyman-alpha escape rate: photons escape when cosmological redshift
-        # moves them out of the line before reabsorption
-        # Λ_α = 1/(n_1s × K) where n_1s = n_H(1-x_H) is the ground-state density
-        n_1s = n_H * max(1 - x_H, 1e-30)
-        Ly_alpha_rate = 1.0 / (n_1s * K)
+        x = x_H + f_He * x_He
+        T_rad = T_cmb * (1 + z)
+        n_H = Nnow * (1 + z)**3
+        n_He = f_He * n_H
+        Hz = Hz_SI(z)
 
-        # The Peebles C factor: probability that an atom reaching n=2 decays to
-        # ground before being photoionised back to the continuum.
-        # C = (Λ_2s + Λ_α) / (Λ_2s + Λ_α + β)
-        # Two-photon decay (Λ_2s = 8.22 s⁻¹) and Ly-α escape compete with
-        # photoionisation (β) from n=2.
-        C_peebles = (Lambda_2s + Ly_alpha_rate) / (Lambda_2s + Ly_alpha_rate + beta)
+        # --- f1: Hydrogen Peebles equation ---
+        if saha_H_mode or x_H > 0.99:
+            f1 = 0.0
+        else:
+            t4 = T_mat / 1e4
+            Rdown = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)
+            Rup = Rdown * (CR * T_mat)**1.5 * np.exp(-CDB / T_mat)
 
-        # dx_H/dz = C / [H(1+z)] × [x² n α_B f - β(1-x)exp(-E_Lyα/kT)]
-        # The fudge factor multiplies α_B to correct for multilevel effects
-        dxdz = (C_peebles / (Hz * (1 + z))) * (
-            x_H**2 * n_H * alpha_B * RECFAST_fudge
-            - beta * (1 - x_H) * np.exp(-E_21_H * eV_to_K / T)
-        )
-        return [dxdz]
+            K = CK / Hz * (1.0
+                + AGauss1 * np.exp(-((np.log(1 + z) - zGauss1) / wGauss1)**2)
+                + AGauss2 * np.exp(-((np.log(1 + z) - zGauss2) / wGauss2)**2))
+            fu = RECFAST_fudge
+            n_1s = n_H * max(1 - x_H, 1e-30)
 
-    # Integrate from high to low redshift
-    # Start fully ionised at z=1600, use Saha until x_e drops below 0.99
-    z_start = 1600
+            if x_H > 0.985:
+                # Near-Saha rate (no Peebles bottleneck)
+                f1 = (x * x_H * n_H * Rdown
+                      - Rup * (1 - x_H) * np.exp(-CL / T_mat)) / (Hz * (1 + z))
+            else:
+                f1 = ((x * x_H * n_H * Rdown
+                       - Rup * (1 - x_H) * np.exp(-CL / T_mat))
+                      * (1 + K * Lambda_2s1s * n_1s)
+                      / (Hz * (1 + z) * (1.0 / fu + K * Lambda_2s1s * n_1s / fu
+                                         + K * Rup * n_1s)))
+
+        # --- f2: Helium singlet ODE ---
+        if x_He < 1e-15:
+            f2 = 0.0
+        else:
+            T_0 = 10.0**0.477121   # ~3 K
+            T_1 = 10.0**5.114      # ~1.3e5 K
+            sq_0 = np.sqrt(T_mat / T_0)
+            sq_1 = np.sqrt(T_mat / T_1)
+            Rdown_He = 10.0**(-16.744) / (sq_0 * (1 + sq_0)**0.289
+                                          * (1 + sq_1)**1.711)
+            Rup_He = 4.0 * Rdown_He * (CR * T_mat)**1.5 * np.exp(-CDB_He / T_mat)
+            He_Boltz = np.exp(min(Bfact / T_mat, 500.0))
+
+            n_He_ground = n_He * max(1 - x_He, 1e-30)
+            tauHe_s = A2P_s * CK_He * 3 * n_He_ground / Hz
+            pHe_s = ((1 - np.exp(-tauHe_s)) / tauHe_s
+                     if tauHe_s > 1e-7 else 1.0 - tauHe_s / 2.0)
+            K_He = 1.0 / max(A2P_s * pHe_s * 3 * n_He_ground, 1e-300)
+
+            f2 = ((x * x_He * n_H * Rdown_He
+                   - Rup_He * (1 - x_He) * np.exp(-CL_He / T_mat))
+                  * (1 + K_He * Lambda_He * n_He_ground * He_Boltz)
+                  / (Hz * (1 + z)
+                     * (1 + K_He * (Lambda_He + Rup_He)
+                        * n_He_ground * He_Boltz)))
+
+        # --- f3: Matter temperature ---
+        x_safe = max(x, 1e-30)
+        timeTh = (1.0 / (CT * T_rad**4)) * (1 + x + f_He) / x_safe
+        timeH = 2.0 / (3.0 * H0_SI * (1 + z)**1.5)
+
+        if timeTh < 1e-3 * timeH:
+            # Tightly coupled: implicit form (T_mat ≈ T_rad + corrections)
+            dHdz = (H0_SI**2 / (2 * Hz)) * omega_m * (
+                4 * (1 + z)**3 / (1 + z_eq) + 3 * (1 + z)**2)
+            epsilon = Hz * (1 + x + f_He) / (CT * T_rad**3 * x_safe)
+            f3 = (T_cmb
+                  + epsilon * (1 + f_He) / (1 + f_He + x)
+                  * (f1 + f_He * f2) / x_safe
+                  - epsilon * dHdz / Hz
+                  + 3 * epsilon / (1 + z))
+        else:
+            # Loosely coupled: Compton cooling + adiabatic expansion
+            f3 = (CT * T_rad**4 * x_safe / (1 + x + f_He)
+                  * (T_mat - T_rad) / (Hz * (1 + z))
+                  + 2 * T_mat / (1 + z))
+
+        return [f1, f2, f3]
+
+    # --- Build z grid ---
+    z_start = 10000
     z_end = 0
-    nz = 10000
+    nz = 20000
     z_arr = np.linspace(z_start, z_end, nz + 1)
-    xe_arr = np.zeros(nz + 1)
+    xH_arr = np.ones(nz + 1)
+    xHe_arr = np.ones(nz + 1)
 
-    # Phase 1: Saha equilibrium
-    saha_switch_idx = 0
+    # --- Phase 1: Saha equilibrium ---
+    # Scan forward (decreasing z) to find where He and H depart from Saha
+    he_ode_idx = None
     for i, z in enumerate(z_arr):
-        xe_arr[i] = saha_xe(z)
-        if xe_arr[i] < 0.99:
-            saha_switch_idx = i
+        if z > 8000:
+            xH_arr[i] = 1.0
+            xHe_arr[i] = 1.0
+        elif z > 5000:
+            x0 = saha_He2(z)
+            xH_arr[i] = 1.0
+            xHe_arr[i] = max((x0 - 1.0) / f_He, 1.0) if f_He > 0 else 1.0
+        elif z > 3500:
+            xH_arr[i] = 1.0
+            xHe_arr[i] = 1.0
+        elif z > 0:
+            x_He = saha_He1(z)
+            xHe_arr[i] = x_He
+            xH_arr[i] = 1.0
+            if x_He < 0.99:
+                he_ode_idx = i
+                break
+        else:
             break
 
-    # Phase 2: Peebles ODE from Saha switch point to z=0
-    z_ode = z_arr[saha_switch_idx:]
-    x0 = [xe_arr[saha_switch_idx]]
+    if he_ode_idx is None:
+        he_ode_idx = len(z_arr) - 1
 
-    sol = integrate.solve_ivp(
-        peebles_rhs, [z_ode[0], z_ode[-1]], x0,
-        t_eval=z_ode, method='Radau', rtol=1e-6, atol=1e-10,
-        max_step=2.0,
-    )
-    xe_arr[saha_switch_idx:] = sol.y[0]
+    # Find where H Saha drops below 0.99
+    h_ode_z = None
+    for z in z_arr[he_ode_idx:]:
+        if z <= 0:
+            break
+        if saha_H(z) < 0.99:
+            h_ode_z = z
+            break
 
-    # Helium: assume fully recombined by z~1600, so x_e = x_H + f_He
-    # (helium recombines earlier at z~1800 for He+ and z~6000 for He++)
-    # At z > 1600 we add f_He (singly ionised helium), then helium is neutral
-    xe_total = xe_arr.copy()
-    xe_total[:saha_switch_idx] += f_He  # He contributes one electron per He atom above switch
+    # --- Phase 2: He ODE + T_mat ODE, H from Saha ---
+    z_phase2_start = z_arr[he_ode_idx]
+    z_phase2_end = h_ode_z if h_ode_z is not None else 0.0
+    z_phase2 = z_arr[(z_arr <= z_phase2_start) & (z_arr >= z_phase2_end)]
+
+    y0_phase2 = [xH_arr[he_ode_idx], xHe_arr[he_ode_idx],
+                 T_cmb * (1 + z_phase2_start)]
+
+    if len(z_phase2) > 1:
+        sol2 = integrate.solve_ivp(
+            lambda z, y: recfast_rhs(z, y, saha_H_mode=True),
+            [z_phase2[0], z_phase2[-1]], y0_phase2,
+            t_eval=z_phase2, method='Radau', rtol=1e-6, atol=1e-10,
+            max_step=5.0,
+        )
+        # Override x_H with Saha values
+        n_sol2 = sol2.y.shape[1]
+        idx_start = np.searchsorted(-z_arr, -z_phase2[0])
+        for j in range(n_sol2):
+            z_j = sol2.t[j]
+            sol2.y[0, j] = saha_H(z_j)
+            ii = idx_start + j
+            if ii < len(z_arr):
+                xH_arr[ii] = sol2.y[0, j]
+                xHe_arr[ii] = sol2.y[1, j]
+
+    # --- Phase 3: Full 3-variable ODE ---
+    if h_ode_z is not None and h_ode_z > 0:
+        h_ode_idx = np.searchsorted(-z_arr, -h_ode_z)
+        z_phase3 = z_arr[h_ode_idx:]
+        z_phase3 = z_phase3[z_phase3 >= 0]
+
+        if len(z_phase3) > 1:
+            # Initial conditions from end of Phase 2
+            if len(z_phase2) > 1:
+                y0_p3 = [sol2.y[0, -1], sol2.y[1, -1], sol2.y[2, -1]]
+            else:
+                y0_p3 = [saha_H(h_ode_z), saha_He1(h_ode_z),
+                         T_cmb * (1 + h_ode_z)]
+
+            sol3 = integrate.solve_ivp(
+                lambda z, y: recfast_rhs(z, y, saha_H_mode=False),
+                [z_phase3[0], z_phase3[-1]], y0_p3,
+                t_eval=z_phase3, method='Radau', rtol=1e-6, atol=1e-10,
+                max_step=2.0,
+            )
+            n_sol = sol3.y.shape[1]
+            for j in range(n_sol):
+                ii = h_ode_idx + j
+                if ii < len(z_arr):
+                    xH_arr[ii] = sol3.y[0, j]
+                    xHe_arr[ii] = sol3.y[1, j]
+    else:
+        # No H ODE needed (shouldn't happen in practice)
+        pass
+
+    # Total electron fraction: x_e = x_H + f_He × x_He
+    xe_total = xH_arr + f_He * xHe_arr
+
+    # At z > 5000, He is (partially) doubly ionised — add extra electrons
+    for i, z in enumerate(z_arr):
+        if z > 8000:
+            xe_total[i] = 1.0 + 2 * f_He
+        elif z > 5000:
+            xe_total[i] = saha_He2(z)
 
     return z_arr, xe_total
 
