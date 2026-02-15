@@ -164,7 +164,7 @@ lambda_alpha = 1.2157e-7   # Lyman-alpha wavelength (m)
 Lambda_2s = 8.2246          # Two-photon decay rate 2s→1s (s⁻¹)
 eV_to_K = 11604.518        # 1 eV in Kelvin
 eV_to_J = 1.602176634e-19  # 1 eV in Joules
-RECFAST_fudge = 1.00       # Fudge factor for Peebles equation (1.14 matches RECFAST; 1.00 matches CAMB's HyRec)
+RECFAST_fudge = 1.006      # Fudge factor for Peebles equation (calibrated to minimise x_e residual vs CAMB/HyRec)
 
 
 def compute_recombination(bg):
