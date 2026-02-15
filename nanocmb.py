@@ -21,6 +21,12 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 import numpy as np
 from scipy import integrate, interpolate, special
 
+try:
+    from numba import njit
+    _jit = njit(cache=True)
+except ImportError:
+    _jit = lambda f: f
+
 # ============================================================
 # PHYSICAL CONSTANTS
 # Natural units with c = 1, distances in Mpc
@@ -423,6 +429,23 @@ IX_R = IX_POL + LMAXPOL - 1                 # N₀ at IX_R, N₁ at IX_R+1, etc.
 NVAR = IX_R + LMAXNR + 1
 
 
+# --- Numba-accelerated helpers (fall back to plain Python without numba) ---
+
+@_jit
+def _cubic_eval(x_knots, coeffs, t):
+    """Evaluate a scipy CubicSpline at point t using binary search + Horner."""
+    n = x_knots.shape[0] - 1
+    lo, hi = 0, n - 1
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        if x_knots[mid + 1] < t:
+            lo = mid + 1
+        else:
+            hi = mid
+    dt = t - x_knots[lo]
+    return ((coeffs[0, lo] * dt + coeffs[1, lo]) * dt + coeffs[2, lo]) * dt + coeffs[3, lo]
+
+
 def setup_perturbation_grid(bg, thermo):
     """Precompute a(τ) and background quantities on a fine conformal time grid.
 
@@ -560,19 +583,30 @@ def adiabatic_ics(k, tau_start, bg, pgrid):
     return y0
 
 
-def boltzmann_derivs(tau, y, k, bg, pgrid, thermo):
+@_jit
+def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
     """Right-hand side of the Boltzmann hierarchy: dy/dτ.
 
     Implements the synchronous gauge equations from CAMB's derivs() subroutine.
     During tight coupling (early times, high opacity), only the photon monopole
     and dipole are evolved; the quadrupole is computed algebraically.
     """
-    B = get_bg_at_tau(tau, bg, pgrid)
-    a, adotoa = B['a'], B['adotoa']
-    opacity = B['opacity']
-    grhog_t, grhor_t = B['grhog_t'], B['grhor_t']
-    grhoc_t, grhob_t = B['grhoc_t'], B['grhob_t']
-    pb43, photbar = B['pb43'], B['photbar']
+    # Background quantities from spline interpolation
+    grhog, grhornomass, grhoc, grhob, grhov = bg5[0], bg5[1], bg5[2], bg5[3], bg5[4]
+    a = _cubic_eval(sp_a_x, sp_a_c, tau)
+    a2 = a * a
+    grhog_t = grhog / a2
+    grhor_t = grhornomass / a2
+    grhoc_t = grhoc / a
+    grhob_t = grhob / a
+    grho_a2 = grhog_t + grhor_t + grhoc_t + grhob_t + grhov * a2
+    adotoa = np.sqrt(grho_a2 / 3.0)
+    opacity = _cubic_eval(sp_op_x, sp_op_c, tau)
+    if opacity < 1e-30:
+        opacity = 1e-30
+    photbar = grhog_t / grhob_t
+    pb43 = 4.0 / 3.0 * photbar
+
     k2 = k * k
 
     # Extract state variables
@@ -593,110 +627,71 @@ def boltzmann_derivs(tau, y, k, bg, pgrid, thermo):
     # Total density and velocity perturbations (Einstein constraint equations)
     dgrho = grhob_t * clxb + grhoc_t * clxc + grhog_t * clxg + grhor_t * clxr
     dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
-    dgpi = grhog_t * pig + grhor_t * pir
 
-    # Synchronous gauge auxiliary variables
-    # z = ḣ/(2k) — the metric trace perturbation rate
+    # Synchronous gauge: z = ḣ/(2k), σ = metric shear
     z = (0.5 * dgrho / k + etak) / adotoa
-    # σ — the metric shear (flat: Kf(1) = 1)
     sigma = z + 1.5 * dgq / k2
 
-    # Polter: polarisation source combination Π = pig/10 + 3E₂/5
+    # Polter: polarisation source Π = pig/10 + 3E₂/5
     E2 = y[IX_POL] if LMAXPOL >= 2 else 0.0
     polter = pig / 10.0 + 9.0 / 15.0 * E2
 
-    # Free-streaming closure: 1/τ term (flat space limit of coth(kτ)/τ)
     cothxor = 1.0 / tau
 
     dy = np.zeros(NVAR)
 
     # --- Metric equation ---
-    # ėtak = (1/2) dgq  (flat case, from Einstein equations)
     dy[IX_ETAK] = 0.5 * dgq
 
-    # --- CDM: at rest in this gauge, only density evolves ---
+    # --- CDM: at rest in this gauge ---
     dy[IX_CLXC] = -k * z
 
     # --- Baryons ---
     dy[IX_CLXB] = -k * (z + vb)
 
     if tight_coupling:
-        # Tight-coupling approximation: photon-baryon fluid is locked together.
-        # Compute the photon quadrupole algebraically:
+        # Tight-coupling: photon-baryon fluid locked together
         pig_tc = 32.0 / 45.0 * k / opacity * (sigma + vb)
-        # In tight coupling, E₂ = pig/4 (CAMB convention), so
-        # polter = pig/10 + 9*(pig/4)/15 = pig/10 + 3pig/20 = pig/4
         polter = pig_tc / 4.0
 
-        # Combined baryon-photon fluid velocity equation (CAMB convention):
-        # v̇_b = (-ȧ/a v_b + k/4 pb43 (δ_γ - 2π_γ)) / (1+pb43)
-        # Uses the photon quadrupole pig (not polter) — CAMB line 2389.
         vbdot = (-adotoa * vb + k / 4.0 * pb43 * (clxg - 2.0 * pig_tc)) / (1.0 + pb43)
         dy[IX_VB] = vbdot
 
-        # Photon monopole: δ̇_γ = -k(4z/3 + q_g)
         dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
-
-        # Photon dipole: q̇_g derived from baryon equation (tightly coupled)
-        # q̇_g = (4/3)(−v̇_b − ȧ/a v_b) / pb43 + k/3 δ_γ − 2k/3 π_γ
         qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig_tc
         dy[IX_G + 1] = qgdot
-
-        # Drive photon quadrupole towards its tight-coupling algebraic value.
-        # CAMB treats pig and E₂ as algebraic (not ODE) variables during
-        # tight coupling. We use fast relaxation (timescale 1/opacity ≈ photon
-        # mean free path) so the ODE solver tracks the correct values.
-        # This is essential: sigma, phi, and the source function all depend on
-        # pig through dgpi, and the state variable must match pig_tc.
         dy[IX_G + 2] = opacity * (pig_tc - pig)
 
         if LMAXPOL >= 2:
             dy[IX_POL] = opacity * (pig_tc / 4.0 - E2)
 
     else:
-        # Full Boltzmann hierarchy: evolve all multipoles
-
-        # Baryon velocity with Thomson drag
-        # v̇_b = -ȧ/a v_b - κ̇ × (4ρ_γ/3ρ_b)(v_b − 3q_g/4)
-        # CAMB form: -adotoa*vb - photbar*opacity*(4/3*vb - qg)
+        # Full Boltzmann hierarchy
         vbdot = -adotoa * vb - photbar * opacity * (4.0 / 3.0 * vb - qg)
         dy[IX_VB] = vbdot
 
-        # Photon monopole (ℓ=0): δ̇_γ = -k(4z/3 + q_g)
         dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
-
-        # Photon dipole (ℓ=1): q̇_g from tight-coupling-like relation
-        # In full hierarchy: q̇_g = (4/3)(-v̇_b - ȧ/a v_b)/pb43 + k/3 δ_γ - 2k/3 π_γ
-        # This comes from the combined photon momentum equation with Thomson scattering
         qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig
         dy[IX_G + 1] = qgdot
 
-        # Photon quadrupole (ℓ=2): with scattering source
-        # ṗig = (2k/5)q_g - (3k/5)Θ₃ - κ̇(pig - polter) + (8/15)kσ
         Theta3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
         dy[IX_G + 2] = (2.0 * k / 5.0 * qg - 3.0 * k / 5.0 * Theta3
                         - opacity * (pig - polter) + 8.0 / 15.0 * k * sigma)
 
-        # Higher photon multipoles (ℓ = 3 to LMAXG-1)
         for l in range(3, LMAXG):
             dy[IX_G + l] = (k * l / (2*l + 1) * y[IX_G + l - 1]
                             - k * (l + 1) / (2*l + 1) * y[IX_G + l + 1]
                             - opacity * y[IX_G + l])
 
-        # Truncation at ℓ = LMAXG: free-streaming closure
-        # Θ̇_ℓmax = k Θ_{ℓmax-1} - (ℓmax+1)/τ Θ_ℓmax - κ̇ Θ_ℓmax
-        cothxor = 1.0 / tau   # flat space: coth(kτ) → 1/τ for large arg
+        # Truncation: free-streaming closure
         dy[IX_G + LMAXG] = (k * y[IX_G + LMAXG - 1]
                              - (LMAXG + 1) * cothxor * y[IX_G + LMAXG]
                              - opacity * y[IX_G + LMAXG])
 
-        # --- Photon polarisation hierarchy (ℓ = 2 to LMAXPOL) ---
-        # E₂: Ė₂ = -κ̇(E₂ - polter) - k/3 E₃
+        # --- Photon polarisation hierarchy ---
         E3 = y[IX_POL + 1] if LMAXPOL >= 3 else 0.0
         dy[IX_POL] = -opacity * (E2 - polter) - k / 3.0 * E3
 
-        # Higher polarisation ℓ = 3 to LMAXPOL-1
-        # Uses spin-2 coupling: polfac(ℓ) = (ℓ+3)(ℓ-1)/(ℓ+1)
         for l in range(3, LMAXPOL):
             idx = IX_POL + l - 2
             polfac_l = (l + 3) * (l - 1) / (l + 1)
@@ -704,34 +699,34 @@ def boltzmann_derivs(tau, y, k, bg, pgrid, thermo):
                        + k * l / (2*l + 1) * y[idx - 1]
                        - polfac_l * k / (2*l + 1) * y[idx + 1])
 
-        # Truncation at ℓ = LMAXPOL: (ℓmax+3)/τ sink for spin-2
         idx_last = IX_POL + LMAXPOL - 2
-        polfac_last = (LMAXPOL + 3) * (LMAXPOL - 1) / (LMAXPOL + 1)
         dy[idx_last] = (-opacity * y[idx_last]
                         + k * LMAXPOL / (2*LMAXPOL + 1) * y[idx_last - 1]
                         - (LMAXPOL + 3) * cothxor * y[idx_last])
 
-    # --- Massless neutrinos (no scattering, always full hierarchy) ---
-    # N₀: δ̇_ν = -k(4z/3 + q_r)
+    # --- Massless neutrinos ---
     dy[IX_R] = -k * (4.0 / 3.0 * z + qr)
-
-    # N₁: q̇_r = k/3(δ_ν - 2π_r)
     dy[IX_R + 1] = k / 3.0 * (clxr - 2.0 * pir)
 
-    # N₂: π̇_r = 2k/5 q_r - 3k/5 N₃ + 8kσ/15
     N3 = y[IX_R + 3] if LMAXNR >= 3 else 0.0
     dy[IX_R + 2] = 2.0 * k / 5.0 * qr - 3.0 * k / 5.0 * N3 + 8.0 / 15.0 * k * sigma
 
-    # Higher neutrino multipoles (ℓ = 3 to LMAXNR-1)
     for l in range(3, LMAXNR):
         dy[IX_R + l] = (k * l / (2*l + 1) * y[IX_R + l - 1]
                         - k * (l + 1) / (2*l + 1) * y[IX_R + l + 1])
 
-    # Truncation at LMAXNR
     dy[IX_R + LMAXNR] = (k * y[IX_R + LMAXNR - 1]
                           - (LMAXNR + 1) * cothxor * y[IX_R + LMAXNR])
 
     return dy
+
+
+def boltzmann_derivs(tau, y, k, bg, pgrid, thermo):
+    """Wrapper: extract spline arrays from pgrid dicts, call _boltzmann_rhs."""
+    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'], bg['grhob'], bg['grhov']])
+    return _boltzmann_rhs(tau, y, k, bg5,
+                          pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
+                          pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
 
 
 def compute_source_functions(tau, y, k, bg, pgrid, thermo):
@@ -818,8 +813,15 @@ def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
 
     # Evolve with Radau (implicit, handles stiffness through recombination)
     ode_rtol = kwargs.get('ode_rtol', 1e-5)
+    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
+                    bg['grhob'], bg['grhov']])
+    sp_a_x = pgrid['a_of_tau'].x
+    sp_a_c = pgrid['a_of_tau'].c
+    sp_op_x = pgrid['opacity_interp'].x
+    sp_op_c = pgrid['opacity_interp'].c
+
     sol = integrate.solve_ivp(
-        lambda tau, y: boltzmann_derivs(tau, y, k, bg, pgrid, thermo),
+        lambda tau, y: _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c),
         [tau_start, tau_out[-1]],
         y0,
         t_eval=tau_out,
@@ -950,6 +952,13 @@ def compute_cls(bg, thermo, p, source_cache=None, fast=False):
         print("Evolving perturbations...")
         ode_kw = {'ode_rtol': 1e-5} if fast else {}
         _args = (bg, thermo, pgrid, tau_out, ode_kw)
+
+        # Warmup JIT (no-op without numba) before forking workers
+        _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
+                       np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
+                                 bg['grhob'], bg['grhov']]),
+                       pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
+                       pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
 
         try:
             from multiprocessing import Pool, cpu_count
