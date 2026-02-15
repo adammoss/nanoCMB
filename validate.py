@@ -296,3 +296,100 @@ try:
 
 except ImportError as e:
     print(f"matplotlib not available ({e}), skipping plots")
+
+# --- Perturbation evolution comparison ---
+try:
+    print("Computing perturbation evolution comparison...")
+    from nanocmb import (setup_perturbation_grid, adiabatic_ics,
+                            _boltzmann_rhs, IX_ETAK, IX_CLXC, IX_CLXB,
+                            IX_VB, IX_G, NVAR)
+    from scipy import integrate as sp_integrate
+
+    pgrid = setup_perturbation_grid(bg, thermo)
+    tau_star_val = thermo['tau_star']
+
+    k_test = [0.001, 0.01, 0.05, 0.1, 0.2, 0.4]
+
+    # Output times: from early to past recombination
+    tau_pert = np.linspace(1.0, tau_star_val + 200, 500)
+    tau_pert = tau_pert[tau_pert > 0.5]
+
+    # Convert tau to z
+    a_pert = np.array([float(pgrid['a_of_tau'](t)) for t in tau_pert])
+    z_pert = 1.0 / a_pert - 1.0
+
+    # CAMB perturbation evolution (z must be in ascending order)
+    z_for_camb = z_pert[::-1]
+    pert_camb = results.get_redshift_evolution(
+        k_test, z_for_camb,
+        ['delta_cdm', 'delta_photon', 'v_baryon_cdm',
+            'delta_baryon', 'pi_photon', 'etak'])
+
+    # nanoCMB evolution for each k
+    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
+                    bg['grhob'], bg['grhov']])
+    nano_sols = {}
+    for k in k_test:
+        tau_start = min(0.1 / k, tau_pert[0] * 0.5)
+        tau_start = max(tau_start, 0.1)
+        y0 = adiabatic_ics(k, tau_start, bg, pgrid)
+        sol = sp_integrate.solve_ivp(
+            lambda tau, y, _k=k: _boltzmann_rhs(tau, y, _k, bg5,
+                pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
+                pgrid['opacity_interp'].x, pgrid['opacity_interp'].c),
+            [tau_start, tau_pert[-1]], y0,
+            t_eval=tau_pert, method='Radau', rtol=1e-5, atol=1e-8,
+            max_step=20.0)
+        nano_sols[k] = sol
+        print(f"  k={k:.3f}: {'OK' if sol.success else 'FAILED'}")
+
+    var_labels = [r'$\delta_\gamma$', r'$\delta_c$', r'$v_b$',
+                    r'$\delta_b$', r'$\pi_\gamma$', r'$\eta k$']
+    nano_ix = [IX_G, IX_CLXC, IX_VB, IX_CLXB, IX_G + 2, IX_ETAK]
+    camb_ix = [1, 0, 2, 3, 4, 5]
+
+    # --- One figure per k mode: evolution (top) + residual (bottom) ---
+    for ik, k in enumerate(k_test):
+        sol = nano_sols[k]
+        if not sol.success:
+            continue
+
+        fig, axes = plt.subplots(2, 6, figsize=(24, 7),
+                                    gridspec_kw={'height_ratios': [3, 1]})
+
+        for iv in range(6):
+            y_camb = pert_camb[ik, ::-1, camb_ix[iv]]
+            y_nano = sol.y[nano_ix[iv]]
+
+            # Top: evolution
+            ax = axes[0, iv]
+            ax.plot(tau_pert, y_camb, 'k-', alpha=0.7, lw=1, label='CAMB')
+            ax.plot(sol.t, y_nano, 'r--', alpha=0.7, lw=1, label='nanoCMB')
+            ax.set_title(var_labels[iv], fontsize=12)
+            ax.set_xticklabels([])
+            if iv == 0:
+                ax.legend(fontsize=8)
+
+            # Bottom: residual
+            ax = axes[1, iv]
+            threshold = np.max(np.abs(y_camb)) * 0.01
+            mask = np.abs(y_camb) > threshold
+            ratio = np.where(mask, y_nano / y_camb, np.nan)
+            ax.plot(tau_pert, ratio, 'r-', alpha=0.6, lw=0.8)
+            ax.axhline(1, color='k', ls='--', lw=0.5)
+            ax.axhspan(0.99, 1.01, alpha=0.15, color='blue')
+            ax.set_ylim(0.95, 1.05)
+            ax.set_ylabel('ratio', fontsize=9)
+            ax.set_xlabel(r'$\tau$ [Mpc]')
+
+        fig.suptitle(f'Perturbation Evolution  k = {k} Mpc$^{{-1}}$', fontsize=14)
+        fig.tight_layout()
+        fname = f'plots/perturbations_k{k:.3f}.png'
+        fig.savefig(fname, dpi=150)
+        plt.close(fig)
+        print(f"Saved {fname}")
+
+except Exception as e:
+    import traceback
+    print(f"Perturbation comparison failed: {e}")
+    traceback.print_exc()
