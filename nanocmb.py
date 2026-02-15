@@ -36,7 +36,6 @@ except ImportError:
 c_km_s = 2.99792458e5               # speed of light (km/s)
 k_B = 1.380649e-23                   # Boltzmann constant (J/K)
 h_P = 6.62607015e-34                 # Planck constant (J·s)
-hbar = h_P / (2 * np.pi)
 m_e = 9.1093837015e-31              # electron mass (kg)
 m_H = 1.673575e-27                   # hydrogen atom mass (kg)
 sigma_T = 6.6524587321e-29           # Thomson cross section (m²)
@@ -260,16 +259,11 @@ def compute_recombination(bg):
     xe_arr = np.zeros(nz + 1)
 
     # Phase 1: Saha equilibrium
-    in_saha = True
     saha_switch_idx = 0
     for i, z in enumerate(z_arr):
-        if in_saha:
-            xe_arr[i] = saha_xe(z)
-            if xe_arr[i] < 0.99:
-                in_saha = False
-                saha_switch_idx = i
-                break
-        else:
+        xe_arr[i] = saha_xe(z)
+        if xe_arr[i] < 0.99:
+            saha_switch_idx = i
             break
 
     # Phase 2: Peebles ODE from Saha switch point to z=0
@@ -312,16 +306,11 @@ def compute_thermodynamics(bg, p):
     def apply_reionisation(z_re):
         """Apply tanh reionisation model and return modified x_e array."""
         delta_z = 0.5  # Width of reionisation transition
-        xe_reion = xe_arr.copy()
-        for i, z in enumerate(z_arr):
-            y = (1 + z)**1.5
-            y_re = (1 + z_re)**1.5
-            dy = 1.5 * np.sqrt(1 + z_re) * delta_z
-            xod = (y_re - y) / dy
-            # Smooth step from freeze-out to fully ionised
-            x_reion = f_re * (1 + np.tanh(xod)) / 2
-            xe_reion[i] = max(xe_reion[i], x_reion)
-        return xe_reion
+        y = (1 + z_arr)**1.5
+        y_re = (1 + z_re)**1.5
+        dy = 1.5 * np.sqrt(1 + z_re) * delta_z
+        x_reion = f_re * (1 + np.tanh((y_re - y) / dy)) / 2
+        return np.maximum(xe_arr, x_reion)
 
     def compute_reion_optical_depth(xe_test):
         """Compute optical depth from z=0 to z_max ~ 50.
@@ -330,18 +319,15 @@ def compute_thermodynamics(bg, p):
         recombination freeze-out. We don't integrate through the recombination
         epoch itself (τ >> 1 there), since τ_reion only measures the low-z part.
         """
-        z_max = 50.0
-        tau = 0
-        for i in range(len(z_arr) - 1):
-            z_mid = 0.5 * (z_arr[i] + z_arr[i+1])
-            if z_mid > z_max:
-                continue
-            a_mid = 1.0 / (1 + z_mid)
-            xe_mid = 0.5 * (xe_test[i] + xe_test[i+1])
-            dz = abs(z_arr[i] - z_arr[i+1])
-            deta = dtauda(a_mid, bg) / (1 + z_mid)**2 * dz
-            tau += xe_mid * bg['akthom'] / a_mid**2 * deta
-        return tau
+        z_mid = 0.5 * (z_arr[:-1] + z_arr[1:])
+        mask = z_mid <= 50.0
+        z_mid = z_mid[mask]
+        a_mid = 1.0 / (1 + z_mid)
+        xe_mid = 0.5 * (xe_test[:-1] + xe_test[1:])[mask]
+        dz = np.abs(np.diff(z_arr))[mask]
+        dtauda_arr = np.array([dtauda(a, bg) for a in a_mid])
+        deta = dtauda_arr / (1 + z_mid)**2 * dz
+        return np.sum(xe_mid * bg['akthom'] / a_mid**2 * deta)
 
     # Bisection to find z_re matching τ_reion
     target_tau = p['tau_reion']
@@ -763,7 +749,7 @@ def compute_source_functions(tau, y, k, bg, pgrid, thermo):
     return ISW, monopole, sigma + vb, vis, polter, source_E
 
 
-def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
+def evolve_k(k, bg, thermo, pgrid, tau_out):
     """Evolve perturbations for wavenumber k, return source functions on tau_out grid.
 
     Start from adiabatic initial conditions deep in radiation domination
@@ -786,7 +772,6 @@ def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
     y0 = adiabatic_ics(k, tau_start, bg, pgrid)
 
     # Evolve with Radau (implicit, handles stiffness through recombination)
-    ode_rtol = kwargs.get('ode_rtol', 1e-5)
     bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
                     bg['grhob'], bg['grhov']])
     sp_a_x = pgrid['a_of_tau'].x
@@ -800,7 +785,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
         y0,
         t_eval=tau_out,
         method='Radau',
-        rtol=ode_rtol, atol=ode_rtol * 1e-3,
+        rtol=1e-5, atol=1e-8,
         max_step=20.0,
     )
 
@@ -841,15 +826,14 @@ def evolve_k(k, bg, thermo, pgrid, tau_out, **kwargs):
 # ============================================================
 
 # Worker functions for multiprocessing (must be top-level for pickling)
-_pool_bg = _pool_thermo = _pool_pgrid = _pool_tau_out = _pool_kw = None
+_pool_bg = _pool_thermo = _pool_pgrid = _pool_tau_out = None
 
-def _pool_init(bg, thermo, pgrid, tau_out, kw):
-    global _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out, _pool_kw
-    _pool_bg, _pool_thermo, _pool_pgrid = bg, thermo, pgrid
-    _pool_tau_out, _pool_kw = tau_out, kw
+def _pool_init(bg, thermo, pgrid, tau_out):
+    global _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out
+    _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out = bg, thermo, pgrid, tau_out
 
 def _pool_solve_k(k):
-    return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out, **_pool_kw)
+    return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
 
 def compute_cls(bg, thermo, p):
@@ -889,7 +873,7 @@ def compute_cls(bg, thermo, p):
 
     # --- Evolve all k modes and store source functions ---
     print("Evolving perturbations...")
-    _args = (bg, thermo, pgrid, tau_out, {})
+    _args = (bg, thermo, pgrid, tau_out)
 
     # Warmup JIT (no-op without numba) before forking workers
     _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
