@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1000 lines of readable Python. Think nanoGPT but for cosmology.
+in ~1000 lines of readable Python. 1% accuracy in 1 minute runtime.
 
 Approximations:
   - Flat geometry (K = 0)
