@@ -197,7 +197,7 @@ a_rad = 4 * sigma_SB / c_SI                       # radiation constant (J/m³/K�
 CT = (8.0 / 3.0) * (sigma_T / (m_e * c_SI)) * a_rad  # Compton cooling (s⁻¹ K⁻⁴)
 
 
-def compute_recombination(bg):
+def compute_recombination(bg, p):
     """Solve ionisation history x_e(z) using full RECFAST.
 
     Three-variable ODE for hydrogen ionisation (x_H), helium ionisation (x_He),
@@ -217,11 +217,11 @@ def compute_recombination(bg):
     # Present-day hydrogen number density (m⁻³)
     H100_SI = 100 * 1e3 / Mpc_in_m
     rho_crit_100 = 3 * H100_SI**2 / (8 * np.pi * G)
-    Nnow = (1 - bg['Y_He']) * (params['omega_b_h2'] * rho_crit_100) / m_H
+    Nnow = (1 - bg['Y_He']) * (p['omega_b_h2'] * rho_crit_100) / m_H
 
     # Cosmological parameters for dH/dz in T_mat equation
     H0_SI = bg['H0'] * c_SI / Mpc_in_m
-    omega_m = (params['omega_b_h2'] + params['omega_c_h2']) / params['h']**2
+    omega_m = (p['omega_b_h2'] + p['omega_c_h2']) / p['h']**2
     a_eq = (bg['grhog'] + bg['grhornomass']) / (bg['grhoc'] + bg['grhob'])
     z_eq = 1.0 / a_eq - 1.0
 
@@ -460,7 +460,7 @@ def compute_thermodynamics(bg, p):
     last scattering, and its width determines the thickness of that surface
     (which causes diffusion damping of small-scale anisotropies).
     """
-    z_arr, xe_arr = compute_recombination(bg)
+    z_arr, xe_arr = compute_recombination(bg, p)
 
     # Add reionisation: tanh model matching the input τ_reion
     # x_e(z) = (f_re - x_freeze) × (1 + tanh((y_re - y)/Δy)) / 2 + x_freeze
