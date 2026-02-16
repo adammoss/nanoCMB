@@ -514,51 +514,78 @@ def compute_thermodynamics(bg, p):
     """
     z_arr, xe_arr = compute_recombination(bg, p)
 
-    # Add reionisation: tanh model matching the input τ_reion
-    # x_e(z) = (f_re - x_freeze) × (1 + tanh((y_re - y)/Δy)) / 2 + x_freeze
-    # where y = (1+z)^1.5, Δy = 1.5√(1+z_re) × Δz_re
+    # Add reionisation: CAMB tanh model (Heflag=6 equivalent)
+    # H reion: x_e = (fraction - xstart) × (1 + tanh(xod)) / 2 + xstart
+    # He reion: x_e += f_He × (1 + tanh((z_He - z) / δz_He)) / 2
+    # where xod = ((1+z_re)^1.5 - (1+z)^1.5) / (1.5×(1+z_re)^0.5 × δz)
     f_He = bg['f_He']
     f_re = 1.0 + f_He  # Full ionisation: H + singly-ionised He
 
+    # Second helium reionisation (HeII → HeIII)
+    he_reion_z = 3.5       # midpoint redshift
+    he_reion_dz = 0.4      # width
+    he_reion_zstart = he_reion_z + 5 * he_reion_dz  # 5.5
+
+    def second_helium_xe(z):
+        """HeII→HeIII reionisation: adds f_He at z < he_reion_zstart."""
+        xod = (he_reion_z - z) / he_reion_dz
+        tgh = np.where(xod > 100, 1.0, np.tanh(xod))
+        return np.where(z < he_reion_zstart, f_He * (tgh + 1) / 2, 0.0)
+
+    delta_z = 0.5
+
     # Find z_re by bisection to match input τ_reion
+    def reion_xe(z_re, z_eval):
+        """Pure reionisation model x_e (tanh + He reion), without recombination stitching."""
+        z_reion_start = z_re + 8 * delta_z
+        x_e_freeze = np.interp(z_reion_start, z_arr[::-1], xe_arr[::-1])
+        WindowVarMid = (1 + z_re)**1.5
+        WindowVarDelta = 1.5 * (1 + z_re)**0.5 * delta_z
+        xod = (WindowVarMid - (1 + z_eval)**1.5) / WindowVarDelta
+        xod = np.clip(xod, -100, 100)
+        x_H_reion = (f_re - x_e_freeze) * (np.tanh(xod) + 1) / 2 + x_e_freeze
+        return x_H_reion + second_helium_xe(z_eval)
+
     def apply_reionisation(z_re):
-        """Apply tanh reionisation model and return modified x_e array."""
-        delta_z = 0.5  # Width of reionisation transition
-        y = (1 + z_arr)**1.5
-        y_re = (1 + z_re)**1.5
-        dy = 1.5 * np.sqrt(1 + z_re) * delta_z
-        x_reion = f_re * (1 + np.tanh((y_re - y) / dy)) / 2
-        return np.maximum(xe_arr, x_reion)
+        """Apply CAMB-style tanh reionisation and return modified x_e array."""
+        x_reion = reion_xe(z_re, z_arr)
+        return np.where(x_reion > xe_arr, x_reion, xe_arr)
 
-    def compute_reion_optical_depth(xe_test):
-        """Compute optical depth from z=0 to z_max ~ 50.
+    def compute_reion_optical_depth(z_re):
+        """Compute optical depth from z=0 to z_reion_start using Romberg integration.
 
-        This captures the reionisation contribution plus the small residual from
-        recombination freeze-out. We don't integrate through the recombination
-        epoch itself (τ >> 1 there), since τ_reion only measures the low-z part.
+        Uses the pure reionisation model x_e (not stitched), matching CAMB's
+        GetReionizationOptDepth which integrates Reion%x_e from 0 to zstart.
         """
-        z_mid = 0.5 * (z_arr[:-1] + z_arr[1:])
-        mask = z_mid <= 50.0
-        z_mid = z_mid[mask]
-        a_mid = 1.0 / (1 + z_mid)
-        xe_mid = 0.5 * (xe_test[:-1] + xe_test[1:])[mask]
-        dz = np.abs(np.diff(z_arr))[mask]
-        dtauda_arr = np.array([dtauda(a, bg) for a in a_mid])
-        deta = dtauda_arr / (1 + z_mid)**2 * dz
-        return np.sum(xe_mid * bg['akthom'] / a_mid**2 * deta)
+        z_reion_start = z_re + 8 * delta_z
+        def integrand(z):
+            a = 1.0 / (1 + z)
+            return reion_xe(z_re, np.atleast_1d(z))[0] * bg['akthom'] * dtauda(a, bg)
+        return integrate.quad(integrand, 0, z_reion_start, limit=200)[0]
 
     # Bisection to find z_re matching τ_reion
     target_tau = p['tau_reion']
     z_re_low, z_re_high = 2.0, 30.0
     for _ in range(60):
         z_re_mid = 0.5 * (z_re_low + z_re_high)
-        xe_test = apply_reionisation(z_re_mid)
-        tau_test = compute_reion_optical_depth(xe_test)
+        tau_test = compute_reion_optical_depth(z_re_mid)
         if tau_test > target_tau:
             z_re_high = z_re_mid
         else:
             z_re_low = z_re_mid
     z_re = 0.5 * (z_re_low + z_re_high)
+
+    # Refine z_arr in the reionisation region (CAMB adds ~50 steps here)
+    z_reion_lo = max(0.01, z_re - 8 * delta_z)
+    z_reion_hi = z_re + 8 * delta_z
+    z_dense = np.linspace(z_reion_hi, z_reion_lo, 200)
+    mask = (z_arr > z_reion_hi) | (z_arr < z_reion_lo)
+    z_new = np.sort(np.concatenate([z_arr[mask], z_dense]))[::-1]
+    # Interpolate recombination x_e onto refined grid (z_arr is high→low, flip for interp)
+    xe_new = np.interp(z_new[::-1], z_arr[::-1], xe_arr[::-1])[::-1]
+    z_arr = z_new
+    xe_arr = xe_new
+
     xe_final = apply_reionisation(z_re)
 
     # Now build conformal time grid and thermodynamic quantities

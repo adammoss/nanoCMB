@@ -237,9 +237,9 @@ try:
     mask_rec = (z_thermo > 800) & (z_thermo < 1300)
     opac_camb = thermo_camb['opacity']
 
-    fig, axes = plt.subplots(3, 2, figsize=(12, 11))
+    fig, axes = plt.subplots(4, 2, figsize=(12, 14))
 
-    # --- Row 0: x_e ---
+    # --- Row 0: x_e (full range) ---
     ax = axes[0, 0]
     ax.semilogy(z_thermo, xe_camb, 'k-', label='CAMB', alpha=0.8)
     ax.semilogy(z_thermo, np.maximum(xe_nano, 1e-5), 'r--', label='nanoCMB', alpha=0.7)
@@ -255,15 +255,35 @@ try:
     ax.set_title(r'$x_e$ Ratio')
     ax.set_ylim(0.99, 1.01)
 
-    # --- Row 1: Visibility ---
+    # --- Row 1: Reionisation window (z < 30) with dense z grid ---
+    z_reion = np.linspace(0.01, 30, 1000)
+    xe_camb_reion = results.get_background_redshift_evolution(z_reion)['x_e']
+    xe_nano_reion = np.interp(z_reion, z_rev, thermo['xe'][::-1])
+
     ax = axes[1, 0]
+    ax.plot(z_reion, xe_camb_reion, 'k-', label='CAMB', alpha=0.8)
+    ax.plot(z_reion, xe_nano_reion, 'r--', label='nanoCMB', alpha=0.7)
+    ax.set_ylabel(r'$x_e$')
+    ax.set_title('Reionisation Window')
+    ax.legend()
+
+    ax = axes[1, 1]
+    mask_reion_ratio = xe_camb_reion > 0.01
+    ax.plot(z_reion[mask_reion_ratio], xe_nano_reion[mask_reion_ratio] / xe_camb_reion[mask_reion_ratio], 'r-', alpha=0.6)
+    ax.axhline(1, color='k', ls='--', lw=0.5)
+    ax.set_ylabel('nanoCMB / CAMB')
+    ax.set_title('Reionisation Ratio')
+    ax.set_ylim(0.9, 1.1)
+
+    # --- Row 2: Visibility ---
+    ax = axes[2, 0]
     ax.plot(z_thermo[mask_rec], vis_camb_norm[mask_rec], 'k-', label='CAMB', alpha=0.8)
     ax.plot(z_thermo[mask_rec], vis_nano_norm[mask_rec], 'r--', label='nanoCMB', alpha=0.7)
     ax.set_ylabel('Visibility (normalised)')
     ax.set_title(f'Visibility Function (z* = {thermo["z_star"]:.1f})')
     ax.legend()
 
-    ax = axes[1, 1]
+    ax = axes[2, 1]
     mask_vis = mask_rec & (np.abs(vis_camb_norm) > 0.05)
     ax.plot(z_thermo[mask_vis], vis_nano_norm[mask_vis] / vis_camb_norm[mask_vis], 'r-', alpha=0.6)
     ax.axhline(1, color='k', ls='--', lw=0.5)
@@ -271,8 +291,8 @@ try:
     ax.set_title('Visibility Ratio')
     ax.set_ylim(0.9, 1.1)
 
-    # --- Row 2: Opacity ---
-    ax = axes[2, 0]
+    # --- Row 3: Opacity ---
+    ax = axes[3, 0]
     ax.semilogy(z_thermo, np.maximum(opac_camb, 1e-10), 'k-', label='CAMB', alpha=0.8)
     ax.semilogy(z_thermo, np.maximum(opac_nano, 1e-10), 'r--', label='nanoCMB', alpha=0.7)
     ax.set_xlabel('Redshift z')
@@ -280,7 +300,7 @@ try:
     ax.set_title('Opacity')
     ax.legend()
 
-    ax = axes[2, 1]
+    ax = axes[3, 1]
     mask_opac = opac_camb > 1e-6
     ax.plot(z_thermo[mask_opac], opac_nano[mask_opac] / opac_camb[mask_opac], 'r-', alpha=0.6)
     ax.axhline(1, color='k', ls='--', lw=0.5)
