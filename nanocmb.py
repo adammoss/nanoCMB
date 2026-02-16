@@ -40,6 +40,8 @@ k_B = 1.380649e-23                   # Boltzmann constant (J/K)
 h_P = 6.62607015e-34                 # Planck constant (J·s)
 m_e = 9.1093837015e-31              # electron mass (kg)
 m_H = 1.673575e-27                   # hydrogen atom mass (kg)
+m_He4 = 6.646479073e-27              # ⁴He atom mass (kg)
+not4 = m_He4 / m_H                   # He/H mass ratio (≈3.9715, not exactly 4)
 sigma_T = 6.6524587321e-29           # Thomson cross section (m²)
 G = 6.67430e-11                      # gravitational constant (m³/kg/s²)
 Mpc_in_m = 3.0856775814913673e22    # 1 Mpc in metres
@@ -103,8 +105,8 @@ def setup_background(p):
     n_H_Mpc = (1 - p['Y_He']) * rho_b_SI / m_H * Mpc_in_m**3
     akthom = (sigma_T / Mpc_in_m**2) * n_H_Mpc
 
-    # Helium fraction by number: f_He = Y/(4(1-Y)) = n_He/n_H
-    f_He = p['Y_He'] / (4 * (1 - p['Y_He']))
+    # Helium fraction by number: f_He = Y/(not4*(1-Y)) = n_He/n_H
+    f_He = p['Y_He'] / (not4 * (1 - p['Y_He']))
 
     return {
         'H0': H0, 'h': h,
@@ -174,6 +176,12 @@ L_He_2p = 1.71134891e7                           # HeI 2¹P₁
 Lambda_2s1s = 8.2245809                           # H 2s→1s two-photon (s⁻¹)
 Lambda_He = 51.3                                  # HeI 2s→1s two-photon (s⁻¹)
 A2P_s = 1.798287e9                                # HeI 2¹P₁→1¹S₀ Einstein A (s⁻¹)
+A2P_t = 177.58                                    # HeI 2³P₁→1¹S₀ Einstein A (s⁻¹)
+L_He_2Pt = 1.690871466e7                          # HeI 2³P₁ (m⁻¹)
+L_He_2St = 1.5985597526e7                         # HeI 2³S₁ (m⁻¹)
+L_He2St_ion = 3.8454693845e6                      # HeI 2³S₁ ionisation continuum (m⁻¹)
+sigma_He_2Ps = 1.436289e-22                       # HeI singlet photoionisation σ (m²)
+sigma_He_2Pt = 1.484872e-22                       # HeI triplet photoionisation σ (m²)
 
 # Fudge factor (CAMB default with Hswitch Gaussians: 1.125)
 RECFAST_fudge = 1.125
@@ -195,6 +203,9 @@ CK_He = (1.0 / L_He_2p)**3 / (8 * np.pi)         # HeI equivalent (m³)
 CL = h_P * c_SI * L_H_alpha / k_B                 # Lyman-alpha energy / k_B (K)
 CL_He = h_P * c_SI * L_He_2s / k_B                # HeI 2s energy / k_B (K)
 Bfact = h_P * c_SI * (L_He_2p - L_He_2s) / k_B   # He 2P−2S splitting / k_B (K)
+CL_PSt = h_P * c_SI * (L_He_2Pt - L_He_2St) / k_B  # He triplet 2³P−2³S splitting / k_B (K)
+CB1_He2St = h_P * c_SI * L_He2St_ion / k_B        # He 2³S ionisation energy / k_B (K)
+CL_He_2St = h_P * c_SI * L_He_2St / k_B           # He 2³S energy / k_B (K)
 a_rad = 4 * sigma_SB / c_SI                       # radiation constant (J/m³/K⁴)
 CT = (8.0 / 3.0) * (sigma_T / (m_e * c_SI)) * a_rad  # Compton cooling (s⁻¹ K⁻⁴)
 
@@ -309,7 +320,17 @@ def compute_recombination(bg, p):
             tauHe_s = A2P_s * CK_He * 3 * n_He_ground / Hz
             pHe_s = ((1 - np.exp(-tauHe_s)) / tauHe_s
                      if tauHe_s > 1e-7 else 1.0 - tauHe_s / 2.0)
-            K_He = 1.0 / max(A2P_s * pHe_s * 3 * n_He_ground, 1e-300)
+
+            # Singlet K_He with H continuum opacity (Heflag >= 2)
+            if x_H < 0.9999999:
+                Doppler_s = c_SI * L_He_2p * np.sqrt(2 * k_B * T_mat / (m_H * not4 * c_SI**2))
+                gamma_2Ps = (3 * A2P_s * f_He * (1 - x_He) * c_SI**2
+                             / (np.sqrt(np.pi) * sigma_He_2Ps * 8 * np.pi
+                                * Doppler_s * max(1 - x_H, 1e-30) * (c_SI * L_He_2p)**2))
+                AHcon_s = A2P_s / (1 + 0.36 * gamma_2Ps**0.86)
+                K_He = 1.0 / max((A2P_s * pHe_s + AHcon_s) * 3 * n_He_ground, 1e-300)
+            else:
+                K_He = 1.0 / max(A2P_s * pHe_s * 3 * n_He_ground, 1e-300)
 
             f2 = ((x * x_He * n_H * Rdown_He
                    - Rup_He * (1 - x_He) * np.exp(-CL_He / T_mat))
@@ -317,6 +338,35 @@ def compute_recombination(bg, p):
                   / (Hz * (1 + z)
                      * (1 + K_He * (Lambda_He + Rup_He)
                         * n_He_ground * He_Boltz)))
+
+            # Triplet channel (Heflag >= 3, gate on x_He as in RECFAST)
+            if x_He > 5e-9:
+                a_trip = 10.0**(-16.306)
+                b_trip = 0.761
+                Rdown_trip = a_trip / (sq_0 * (1 + sq_0)**(1.0 - b_trip)
+                                       * (1 + sq_1)**(1.0 + b_trip))
+                Rup_trip = (4.0 / 3.0) * Rdown_trip * (CR * T_mat)**1.5 * np.exp(-CB1_He2St / T_mat)
+
+                tauHe_t = A2P_t * n_He_ground * 3 / (8 * np.pi * Hz * L_He_2Pt**3)
+                pHe_t = ((1 - np.exp(-tauHe_t)) / tauHe_t
+                         if tauHe_t > 1e-7 else 1.0 - tauHe_t / 2.0)
+
+                # Triplet C factor with H continuum opacity (Heflag 6)
+                if x_H < 0.99999:
+                    Doppler_t = c_SI * L_He_2Pt * np.sqrt(2 * k_B * T_mat / (m_H * not4 * c_SI**2))
+                    gamma_2Pt = (3 * A2P_t * f_He * (1 - x_He) * c_SI**2
+                                 / (np.sqrt(np.pi) * sigma_He_2Pt * 8 * np.pi
+                                    * Doppler_t * max(1 - x_H, 1e-30) * (c_SI * L_He_2Pt)**2))
+                    AHcon_t = A2P_t / (1 + 0.66 * gamma_2Pt**0.9) / 3.0
+                    CfHe_t = (A2P_t * pHe_t + AHcon_t) * np.exp(-CL_PSt / T_mat)
+                else:
+                    CfHe_t = A2P_t * pHe_t * np.exp(-CL_PSt / T_mat)
+                denom = Rup_trip + CfHe_t
+                CfHe_t = CfHe_t / denom if denom > 1e-300 else 0.0
+
+                f2 += ((x * x_He * n_H * Rdown_trip
+                        - (1 - x_He) * 3 * Rup_trip * np.exp(-CL_He_2St / T_mat))
+                       * CfHe_t / (Hz * (1 + z)))
 
         # --- f3: Matter temperature ---
         x_safe = max(x, 1e-30)

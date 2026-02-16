@@ -194,7 +194,7 @@ try:
     thermo = compute_thermodynamics(bg, params)
 
     # CAMB thermo on a common z grid
-    z_thermo = np.linspace(0.01, 1600, 2000)
+    z_thermo = np.linspace(0.01, 3000, 4000)
     thermo_camb = results.get_background_redshift_evolution(z_thermo)
 
     # nanoCMB interpolated to same z grid (z_arr runs high→low, so reverse)
@@ -253,7 +253,7 @@ try:
     ax.axhline(1, color='k', ls='--', lw=0.5)
     ax.set_ylabel('nanoCMB / CAMB')
     ax.set_title(r'$x_e$ Ratio')
-    ax.set_ylim(0.9, 1.1)
+    ax.set_ylim(0.99, 1.01)
 
     # --- Row 1: Visibility ---
     ax = axes[1, 0]
