@@ -1,8 +1,8 @@
 # nanoCMB
 
-A minimal CMB angular power spectrum calculator in ~1200 lines of Python. Think nanoGPT but for cosmology.
+A minimal CMB angular power spectrum calculator in ~1k lines of Python. 
 
-Computes the TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, recombination, Boltzmann hierarchy, line-of-sight integration. Matches [CAMB](https://github.com/cmbant/CAMB) to ~1-2% across the acoustic peaks.
+Computes the TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, recombination, Boltzmann hierarchy, line-of-sight integration. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy across the acoustic peaks.
 
 ## Quick start
 
@@ -31,17 +31,17 @@ Validated against CAMB with Planck 2018 best-fit parameters:
 
 | l range | TT (mean ratio) | TT (std) | EE (mean ratio) | EE (std) |
 |---------|:---:|:---:|:---:|:---:|
-| 2-30 | 1.000 | 0.6% | 0.998 | 9.5% |
-| 30-500 | 0.997 | 0.7% | 0.991 | 1.6% |
-| 500-2000 | 0.984 | 0.7% | 0.989 | 1.7% |
-| 2000-2500 | 0.999 | 0.9% | 1.016 | 1.9% |
+| 2-30 | 0.999 | 0.5% | - | - |
+| 30-500 | 1.004 | 0.3% | 0.995 | 0.4% |
+| 500-2000 | 1.001 | 0.2% | 0.994 | 0.2% |
+| 2000-2500 | 1.000 | 0.1% | 0.997 | 0.3% |
 
 ## What's inside
 
 The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom narrative:
 
 1. **Background cosmology** -- Friedmann equation, conformal time, sound speed
-2. **Recombination** -- Saha equilibrium + Peebles equation, visibility function
+2. **Recombination** -- Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch), visibility function
 3. **Perturbations** -- Boltzmann hierarchy in synchronous gauge (CDM frame) with tight-coupling approximation
 4. **Line-of-sight integration** -- Multi-channel IBP decomposition (j_l, j_l', j_l'' channels) with jv-based Bessel functions
 5. **Power spectrum assembly** -- Primordial spectrum, k-integration, l-interpolation
@@ -51,7 +51,6 @@ The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom narr
 - Flat geometry (K = 0)
 - Massless neutrinos only
 - Cosmological constant (w = -1)
-- Simplified RECFAST recombination (Peebles equation)
 - No lensing, no tensors, no isocurvature modes
 - First-order tight-coupling approximation
 
@@ -59,6 +58,7 @@ The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom narr
 
 - numpy
 - scipy
+- numba (optional for speedup)
 
 That's it. CAMB and matplotlib are only needed for `validate.py`.
 

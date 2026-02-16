@@ -2,17 +2,19 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1000 lines of readable Python. 1% accuracy in 1 minute runtime.
+in ~1k lines of readable Python. 1% accuracy in <1 minute runtime.
+
+Features:
+  - Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch)
 
 Approximations:
   - Flat geometry (K = 0)
   - Massless neutrinos only (no massive species)
   - Cosmological constant (w = -1 exactly)
-  - Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch)
   - No lensing, no tensors, no isocurvature modes
   - First-order tight-coupling approximation
 
-Dependencies: numpy, scipy (nothing else)
+Dependencies: numpy, scipy (optional numba for speedup)
 
 Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
        densities as 8πGρ in Mpc⁻² (CAMB convention), temperatures in K
@@ -59,6 +61,7 @@ params = {
     'T_cmb': 2.7255,                 # CMB temperature today (K)
     'Y_He': 0.245,                   # helium mass fraction
     'k_pivot': 0.05,                 # pivot scale (Mpc⁻¹)
+    'ell_max': 2500,                 # maximum multipole
 }
 
 
@@ -157,7 +160,6 @@ def compute_background(p):
 # Then compute optical depth τ(η) and visibility function g(η).
 # ============================================================
 
-# Recombination constants (full RECFAST, wavenumber notation matching CAMB)
 c_SI = c_km_s * 1e3                              # speed of light (m/s)
 
 # Atomic transition levels (wavenumber, m⁻¹)
@@ -228,7 +230,7 @@ def compute_recombination(bg, p):
     def Hz_SI(z):
         return hubble(1.0 / (1 + z), bg) * c_SI / Mpc_in_m
 
-    # --- Saha equations (CAMB convention: rhs absorbs (1+z)^3 into CR term) ---
+    # --- Saha equations ---
     def saha_He2(z):
         """He++ → He+ Saha: returns total x_e per H atom."""
         T = T_cmb * (1 + z)
@@ -643,10 +645,7 @@ def setup_perturbation_grid(bg, thermo):
 def adiabatic_ics(k, tau_start, bg, pgrid):
     """Set adiabatic initial conditions deep in the radiation era (kτ ≪ 1).
 
-    These follow CAMB's initial() subroutine exactly. CAMB first populates an
-    initv array with mode coefficients, then for adiabatic mode applies a sign
-    flip (InitVec = -initv), and finally applies special prefactors when writing
-    to the state vector (etak gets a factor of k/2). We combine all steps here.
+    These follow CAMB's initial() subroutine exactly.
     """
     tau = tau_start
     x = k * tau
@@ -992,9 +991,9 @@ def compute_cls(bg, thermo, p):
 
     # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
-    tau_early = np.linspace(1.0, tau_star - 100, 50)
-    tau_rec = np.linspace(tau_star - 100, tau_star + 200, 400)
-    tau_late = np.linspace(tau_star + 200, tau0 - 10, 100)
+    tau_early = np.linspace(1.0, tau_star - 100, 60)
+    tau_rec = np.linspace(tau_star - 100, tau_star + 200, 500)
+    tau_late = np.linspace(tau_star + 200, tau0 - 10, 120)
     tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late]))
     tau_out = tau_out[(tau_out > 0.5) & (tau_out < tau0 - 1)]
     ntau = len(tau_out)
@@ -1068,14 +1067,13 @@ def compute_cls(bg, thermo, p):
 
     # --- Line-of-sight integration ---
     print("Computing transfer functions (line-of-sight integration)...")
-    ell_max = 2500
-    # ~130 ℓ-values: dense at low ℓ (narrow peaks), step ~25 at high ℓ
-    # (CAMB uses ~70 with spline templates; we use more to compensate)
+    ell_max = p['ell_max']
     ells_compute = np.unique(np.concatenate([
-        np.arange(2, 30, 1),
-        np.arange(30, 80, 3),
-        np.arange(80, 200, 5),
-        np.arange(200, ell_max + 1, 25),
+        np.arange(2, 16, 1),
+        np.arange(17, 39, 2),
+        np.arange(40, 95, 5),
+        np.array([110, 130, 150, 175, 200]),
+        np.arange(200, ell_max + 1, 50),
     ]))
     ells_compute = ells_compute[ells_compute <= ell_max]
     nell = len(ells_compute)
@@ -1097,7 +1095,7 @@ def compute_cls(bg, thermo, p):
         # Restrict k-range to where j_ℓ(kχ) is nonzero
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
-        k_hi = (ell + 1000) / chi_star if chi_star > 0 else k_fine[-1]
+        k_hi = (ell + 1700) / chi_star if chi_star > 0 else k_fine[-1]
         ik_lo = max(0, np.searchsorted(k_fine, k_lo) - 1)
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
 

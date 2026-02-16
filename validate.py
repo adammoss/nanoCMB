@@ -17,6 +17,7 @@ pars.set_cosmology(
     TCMB=2.7255,
     YHe=0.245,
 )
+pars.set_accuracy(AccuracyBoost=3)
 pars.InitPower.set_params(As=2.1e-9, ns=0.9649, r=0)
 pars.set_for_lmax(2600, lens_potential_accuracy=0)
 pars.DoLensing = False
@@ -57,12 +58,11 @@ TE_nano = DlTE_nano[mask_nano]
 # Print comparison at key ℓ values
 print(f"{'ℓ':>5s}  {'TT_nano':>10s}  {'TT_CAMB':>10s}  {'ratio':>8s}  {'EE_nano':>10s}  {'EE_CAMB':>10s}  {'ratio':>8s}")
 for ell in [2, 10, 30, 100, 220, 500, 1000, 1500, 2000]:
-    idx_c = ell
-    idx_n = ell - ell_min
-    if idx_c < len(DlTT_camb) and idx_n < len(TT_nano):
-        rTT = TT_nano[idx_n] / TT_camb[idx_c] if TT_camb[idx_c] != 0 else 0
-        rEE = EE_nano[idx_n] / EE_camb[idx_c] if EE_camb[idx_c] != 0 else 0
-        print(f"{ell:5d}  {TT_nano[idx_n]:10.2f}  {TT_camb[idx_c]:10.2f}  {rTT:8.3f}  {EE_nano[idx_n]:10.4f}  {EE_camb[idx_c]:10.4f}  {rEE:8.3f}")
+    idx = ell - ell_min
+    if idx < len(TT_nano) and idx < len(TT_camb):
+        rTT = TT_nano[idx] / TT_camb[idx] if TT_camb[idx] != 0 else 0
+        rEE = EE_nano[idx] / EE_camb[idx] if EE_camb[idx] != 0 else 0
+        print(f"{ell:5d}  {TT_nano[idx]:10.2f}  {TT_camb[idx]:10.2f}  {rTT:8.3f}  {EE_nano[idx]:10.4f}  {EE_camb[idx]:10.4f}  {rEE:8.3f}")
 
 # Summary statistics
 for name, nano, ref in [('TT', TT_nano, TT_camb), ('EE', EE_nano, EE_camb)]:
@@ -137,13 +137,13 @@ try:
     residual = DlTT_nano[mask_pos] / TT_camb_interp[mask_pos] - 1
     ax.plot(ells_nano[mask_pos], residual * 100, 'r-', alpha=0.6, lw=0.8)
     ax.axhline(0, color='k', ls='--', lw=0.5)
-    ax.axhspan(-5, 5, alpha=0.1, color='green', label=r'$\pm$5%')
-    ax.axhspan(-2, 2, alpha=0.1, color='blue', label=r'$\pm$2%')
+    ax.axhspan(-2, 2, alpha=0.1, color='green', label=r'$\pm$2%')
+    ax.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
     ax.set_xlabel(r'Multipole $\ell$')
     ax.set_ylabel('nanoCMB / CAMB $-$ 1  [%]')
     ax.set_title('TT Residual')
     ax.set_xlim(2, 2500)
-    ax.set_ylim(-10, 10)
+    ax.set_ylim(-5, 5)
     ax.legend(loc='upper left')
     fig.tight_layout()
     fig.savefig('plots/tt_residuals.png', dpi=150)
@@ -156,13 +156,13 @@ try:
     residual = DlEE_nano[mask_pos] / EE_camb_interp[mask_pos] - 1
     ax.plot(ells_nano[mask_pos], residual * 100, 'b-', alpha=0.6, lw=0.8)
     ax.axhline(0, color='k', ls='--', lw=0.5)
-    ax.axhspan(-5, 5, alpha=0.1, color='green', label=r'$\pm$5%')
-    ax.axhspan(-2, 2, alpha=0.1, color='blue', label=r'$\pm$2%')
+    ax.axhspan(-2, 2, alpha=0.1, color='green', label=r'$\pm$2%')
+    ax.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
     ax.set_xlabel(r'Multipole $\ell$')
     ax.set_ylabel('nanoCMB / CAMB $-$ 1  [%]')
     ax.set_title('EE Residual')
     ax.set_xlim(2, 2500)
-    ax.set_ylim(-10, 10)
+    ax.set_ylim(-5, 5)
     ax.legend(loc='upper left')
     fig.tight_layout()
     fig.savefig('plots/ee_residuals.png', dpi=150)
@@ -351,7 +351,7 @@ try:
                 # k range where Δ_ℓ(k) is non-negligible
                 x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
                 k_lo = max(1e-5, x_lo / chi_max * 0.5)
-                k_hi = min(0.5, (ell + 1000) / chi_star * 1.2)
+                k_hi = min(0.5, (ell + 1700) / chi_star * 1.2)
 
                 ax = axes[0, ic]
                 ax.semilogx(q_camb, delta_camb, 'k-', alpha=0.7, lw=1, label='CAMB')
