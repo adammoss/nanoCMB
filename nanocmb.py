@@ -1071,7 +1071,15 @@ def compute_cls(bg, thermo, p):
     tau_early = np.linspace(1.0, tau_star - 100, 60)
     tau_rec = np.linspace(tau_star - 100, tau_star + 200, 500)
     tau_late = np.linspace(tau_star + 200, tau0 - 10, 120)
-    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late]))
+    z_rev = thermo['z_arr'][::-1]
+    tau_rev = thermo['tau_arr'][::-1]
+    z_re = thermo['z_reion']
+    z_re_lo = max(0.01, z_re - 6.0)
+    z_re_hi = z_re + 6.0
+    tau_re_lo = np.interp(z_re_lo, z_rev, tau_rev)
+    tau_re_hi = np.interp(z_re_hi, z_rev, tau_rev)
+    tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), 80)
+    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
     tau_out = tau_out[(tau_out > 0.5) & (tau_out < tau0 - 1)]
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
@@ -1083,10 +1091,11 @@ def compute_cls(bg, thermo, p):
     # The ODE grid only needs to resolve the acoustic pattern in source functions
     # (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). The finer k-grid for Bessel oscillation
     # resolution is handled by interpolation below. ~200 modes gives >10 pts/oscillation.
-    k_low = np.logspace(np.log10(k_min), np.log10(0.008), 20)
-    k_mid = np.linspace(0.008, 0.25, 150)
-    k_high = np.linspace(0.25, k_max, 40)
-    k_arr = np.unique(np.concatenate([k_low, k_mid, k_high]))
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), 24)
+    k_mid = np.linspace(0.008, 0.18, 180)
+    k_mid_hi = np.linspace(0.18, 0.30, 70)
+    k_high = np.linspace(0.30, k_max, 50)
+    k_arr = np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
 
@@ -1172,7 +1181,7 @@ def compute_cls(bg, thermo, p):
         # Restrict k-range to where j_ℓ(kχ) is nonzero
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
-        k_hi = (ell + 1700) / chi_star if chi_star > 0 else k_fine[-1]
+        k_hi = (ell + 2000) / chi_star if chi_star > 0 else k_fine[-1]
         ik_lo = max(0, np.searchsorted(k_fine, k_lo) - 1)
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
 
