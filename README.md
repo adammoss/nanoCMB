@@ -1,8 +1,16 @@
 # nanoCMB
 
-A minimal CMB angular power spectrum calculator in ~1k lines of Python. 
+A minimal CMB angular power spectrum calculator in ~1k lines of Python.
 
 Computes the TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, recombination, Boltzmann hierarchy, line-of-sight integration. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy across the acoustic peaks.
+
+## Spectra
+
+![TT Power Spectrum](plots/tt_spectrum.png)
+
+![EE Power Spectrum](plots/ee_spectrum.png)
+
+![TE Power Spectrum](plots/te_spectrum.png)
 
 ## Quick start
 
@@ -23,18 +31,18 @@ pip install camb matplotlib
 python validate.py
 ```
 
-This produces `plots/{tt,ee,te}_spectrum.png`, `plots/{tt,ee,te}_residuals.png`, and `plots/background_checks.png`.
+This produces `plots/{tt,ee,te}_spectrum.png` (with residual panels) and `plots/background_checks.png`.
 
 ## Accuracy
 
-Validated against CAMB with Planck 2018 best-fit parameters:
+Validated against CAMB (AccuracyBoost=3) with Planck 2018 best-fit parameters:
 
 | l range | TT (mean ratio) | TT (std) | EE (mean ratio) | EE (std) |
 |---------|:---:|:---:|:---:|:---:|
-| 2-30 | 0.999 | 0.5% | - | - |
-| 30-500 | 1.004 | 0.3% | 0.995 | 0.4% |
-| 500-2000 | 1.001 | 0.2% | 0.994 | 0.2% |
-| 2000-2500 | 1.000 | 0.1% | 0.997 | 0.3% |
+| 2-30 | 0.998 | 0.5% | - | - |
+| 30-500 | 1.003 | 0.3% | 1.000 | 0.5% |
+| 500-2000 | 0.999 | 0.1% | 0.997 | 0.2% |
+| 2000-2500 | 0.994 | 0.2% | 0.993 | 0.4% |
 
 ## What's inside
 

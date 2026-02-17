@@ -88,105 +88,75 @@ try:
     EE_camb_interp = np.interp(ells_nano, ells_camb, DlEE_camb)
     TE_camb_interp = np.interp(ells_nano, ells_camb, DlTE_camb)
 
-    # --- TT spectrum ---
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(ells_nano, TT_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
-    ax.plot(ells_nano, DlTT_nano, 'r-', label='nanoCMB', alpha=0.7, lw=1)
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel(r'$\mathcal{D}_\ell^{TT}$ [$\mu$K$^2$]')
-    ax.set_title('TT Power Spectrum')
-    ax.legend()
-    ax.set_xlim(2, 2500)
+    # --- TT spectrum + residual ---
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(8, 6),
+        gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    ax_top.plot(ells_nano, TT_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
+    ax_top.plot(ells_nano, DlTT_nano, 'r-', label='nanoCMB', alpha=0.7, lw=1)
+    ax_top.set_ylabel(r'$\mathcal{D}_\ell^{TT}$ [$\mu$K$^2$]')
+    ax_top.set_title('TT Power Spectrum')
+    ax_top.legend()
+    ax_top.set_xlim(2, 2500)
+    mask_pos = TT_camb_interp > 10
+    residual = DlTT_nano[mask_pos] / TT_camb_interp[mask_pos] - 1
+    ax_bot.plot(ells_nano[mask_pos], residual * 100, 'r-', alpha=0.6, lw=0.8)
+    ax_bot.axhline(0, color='k', ls='--', lw=0.5)
+    ax_bot.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
+    ax_bot.set_xlabel(r'Multipole $\ell$')
+    ax_bot.set_ylabel('Residual [%]')
+    ax_bot.set_ylim(-3, 3)
+    ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
     fig.savefig('plots/tt_spectrum.png', dpi=150)
     plt.close(fig)
     print("Saved plots/tt_spectrum.png")
 
-    # --- EE spectrum ---
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(ells_nano, EE_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
-    ax.plot(ells_nano, DlEE_nano, 'b-', label='nanoCMB', alpha=0.7, lw=1)
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel(r'$\mathcal{D}_\ell^{EE}$ [$\mu$K$^2$]')
-    ax.set_title('EE Power Spectrum')
-    ax.legend()
-    ax.set_xlim(2, 2500)
+    # --- EE spectrum + residual ---
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(8, 6),
+        gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    ax_top.plot(ells_nano, EE_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
+    ax_top.plot(ells_nano, DlEE_nano, 'b-', label='nanoCMB', alpha=0.7, lw=1)
+    ax_top.set_ylabel(r'$\mathcal{D}_\ell^{EE}$ [$\mu$K$^2$]')
+    ax_top.set_title('EE Power Spectrum')
+    ax_top.legend()
+    ax_top.set_xlim(2, 2500)
+    mask_pos = EE_camb_interp > 0.1
+    residual = DlEE_nano[mask_pos] / EE_camb_interp[mask_pos] - 1
+    ax_bot.plot(ells_nano[mask_pos], residual * 100, 'b-', alpha=0.6, lw=0.8)
+    ax_bot.axhline(0, color='k', ls='--', lw=0.5)
+    ax_bot.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
+    ax_bot.set_xlabel(r'Multipole $\ell$')
+    ax_bot.set_ylabel('Residual [%]')
+    ax_bot.set_ylim(-3, 3)
+    ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
     fig.savefig('plots/ee_spectrum.png', dpi=150)
     plt.close(fig)
     print("Saved plots/ee_spectrum.png")
 
-    # --- TE spectrum ---
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(ells_nano, TE_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
-    ax.plot(ells_nano, DlTE_nano, 'g-', label='nanoCMB', alpha=0.7, lw=1)
-    ax.axhline(0, color='gray', ls=':', lw=0.5)
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel(r'$\mathcal{D}_\ell^{TE}$ [$\mu$K$^2$]')
-    ax.set_title('TE Power Spectrum')
-    ax.legend()
-    ax.set_xlim(2, 2500)
+    # --- TE spectrum + residual ---
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(8, 6),
+        gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    ax_top.plot(ells_nano, TE_camb_interp, 'k-', label='CAMB', alpha=0.8, lw=1)
+    ax_top.plot(ells_nano, DlTE_nano, 'g-', label='nanoCMB', alpha=0.7, lw=1)
+    ax_top.axhline(0, color='gray', ls=':', lw=0.5)
+    ax_top.set_ylabel(r'$\mathcal{D}_\ell^{TE}$ [$\mu$K$^2$]')
+    ax_top.set_title('TE Power Spectrum')
+    ax_top.legend()
+    ax_top.set_xlim(2, 2500)
+    mask_pos = np.abs(TE_camb_interp) > 5
+    residual = DlTE_nano[mask_pos] / TE_camb_interp[mask_pos] - 1
+    ax_bot.plot(ells_nano[mask_pos], residual * 100, 'g-', alpha=0.6, lw=0.8)
+    ax_bot.axhline(0, color='k', ls='--', lw=0.5)
+    ax_bot.axhspan(-2, 2, alpha=0.1, color='blue', label=r'$\pm$2%')
+    ax_bot.set_xlabel(r'Multipole $\ell$')
+    ax_bot.set_ylabel('Residual [%]')
+    ax_bot.set_ylim(-10, 10)
+    ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
     fig.savefig('plots/te_spectrum.png', dpi=150)
     plt.close(fig)
     print("Saved plots/te_spectrum.png")
-
-    # --- TT residuals ---
-    fig, ax = plt.subplots(figsize=(8, 4))
-    mask_pos = TT_camb_interp > 10
-    residual = DlTT_nano[mask_pos] / TT_camb_interp[mask_pos] - 1
-    ax.plot(ells_nano[mask_pos], residual * 100, 'r-', alpha=0.6, lw=0.8)
-    ax.axhline(0, color='k', ls='--', lw=0.5)
-    ax.axhspan(-2, 2, alpha=0.1, color='green', label=r'$\pm$2%')
-    ax.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel('nanoCMB / CAMB $-$ 1  [%]')
-    ax.set_title('TT Residual')
-    ax.set_xlim(2, 2500)
-    ax.set_ylim(-5, 5)
-    ax.legend(loc='upper left')
-    fig.tight_layout()
-    fig.savefig('plots/tt_residuals.png', dpi=150)
-    plt.close(fig)
-    print("Saved plots/tt_residuals.png")
-
-    # --- EE residuals ---
-    fig, ax = plt.subplots(figsize=(8, 4))
-    mask_pos = EE_camb_interp > 0.1
-    residual = DlEE_nano[mask_pos] / EE_camb_interp[mask_pos] - 1
-    ax.plot(ells_nano[mask_pos], residual * 100, 'b-', alpha=0.6, lw=0.8)
-    ax.axhline(0, color='k', ls='--', lw=0.5)
-    ax.axhspan(-2, 2, alpha=0.1, color='green', label=r'$\pm$2%')
-    ax.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel('nanoCMB / CAMB $-$ 1  [%]')
-    ax.set_title('EE Residual')
-    ax.set_xlim(2, 2500)
-    ax.set_ylim(-5, 5)
-    ax.legend(loc='upper left')
-    fig.tight_layout()
-    fig.savefig('plots/ee_residuals.png', dpi=150)
-    plt.close(fig)
-    print("Saved plots/ee_residuals.png")
-
-    # --- TE residuals ---
-    fig, ax = plt.subplots(figsize=(8, 4))
-    mask_pos = np.abs(TE_camb_interp) > 5
-    residual = DlTE_nano[mask_pos] / TE_camb_interp[mask_pos] - 1
-    ax.plot(ells_nano[mask_pos], residual * 100, 'g-', alpha=0.6, lw=0.8)
-    ax.axhline(0, color='k', ls='--', lw=0.5)
-    ax.axhspan(-5, 5, alpha=0.1, color='green', label=r'$\pm$5%')
-    ax.axhspan(-2, 2, alpha=0.1, color='blue', label=r'$\pm$2%')
-    ax.set_xlabel(r'Multipole $\ell$')
-    ax.set_ylabel('nanoCMB / CAMB $-$ 1  [%]')
-    ax.set_title('TE Residual')
-    ax.set_xlim(2, 2500)
-    ax.set_ylim(-20, 20)
-    ax.legend(loc='upper left')
-    fig.tight_layout()
-    fig.savefig('plots/te_residuals.png', dpi=150)
-    plt.close(fig)
-    print("Saved plots/te_residuals.png")
 
     # --- Background checks ---
     from nanocmb import compute_background, hubble, conformal_time, compute_thermodynamics, c_km_s, params
