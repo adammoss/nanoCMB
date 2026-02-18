@@ -995,7 +995,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     # Initial conditions
     y0 = adiabatic_ics(k, tau_start, bg, pgrid)
 
-    # Evolve with Radau (implicit, handles stiffness through recombination)
+    # Evolve with LSODA (auto-switches Adams/BDF for non-stiff/stiff regimes)
     bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
                     bg['grhob'], bg['grhov']])
     sp_a_x = pgrid['a_of_tau'].x
@@ -1008,7 +1008,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
         [tau_start, tau_out[-1]],
         y0,
         t_eval=tau_out,
-        method='Radau',
+        method='LSODA',
         rtol=1e-5, atol=1e-8,
         max_step=20.0,
     )

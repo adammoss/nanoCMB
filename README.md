@@ -6,11 +6,11 @@ Computes the TT, EE, and TE angular power spectra for flat LCDM cosmologies from
 
 ## Spectra
 
-![TT Power Spectrum](plots/tt_spectrum.png)
+![TT Power Spectrum](tt_spectrum.png)
 
-![EE Power Spectrum](plots/ee_spectrum.png)
+![EE Power Spectrum](ee_spectrum.png)
 
-![TE Power Spectrum](plots/te_spectrum.png)
+![TE Power Spectrum](te_spectrum.png)
 
 ## Quick start
 
