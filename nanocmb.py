@@ -21,8 +21,8 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 """
 
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
 from scipy import integrate, interpolate, special
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from numba import njit
@@ -65,7 +65,6 @@ params = {
     'k_pivot': 0.05,                 # pivot scale (Mpc⁻¹)
     'ell_max': 2500,                 # maximum multipole
 }
-
 
 # ============================================================
 # BACKGROUND COSMOLOGY
@@ -1055,6 +1054,43 @@ def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
 
+def _build_bessel_tables(ells_compute, x_max, dx=0.20):
+    """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation."""
+    n_x = int(np.ceil(x_max / dx)) + 2
+    x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
+    x_safe = np.where(x_tab > 1e-30, x_tab, 1.0)
+    pref = np.where(x_tab > 1e-30, np.sqrt(np.pi / (2.0 * x_safe)), 0.0)
+
+    nell = len(ells_compute)
+    jl_tab = np.empty((nell, n_x))
+    jl1_tab = np.empty((nell, n_x))
+
+    for i, ell in enumerate(ells_compute):
+        nu = ell + 0.5
+        jl = pref * special.jv(nu, x_tab)
+        jl1 = pref * special.jv(nu + 1.0, x_tab)
+        # Correct small-x limits for stability of interpolation near origin.
+        if ell == 0:
+            jl[0] = 1.0
+        else:
+            jl[0] = 0.0
+        jl1[0] = 0.0
+        jl_tab[i, :] = jl
+        jl1_tab[i, :] = jl1
+
+    return x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab
+
+
+def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
+    """Linear interpolation for values on a uniform x-grid."""
+    u = (x - x0) * inv_dx
+    idx = np.floor(u).astype(np.int64)
+    idx = np.clip(idx, 0, n_x - 2)
+    u = np.clip(u, 0.0, n_x - 1.0)
+    frac = u - idx
+    return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
+
+
 def compute_cls(bg, thermo, p):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
@@ -1151,7 +1187,7 @@ def compute_cls(bg, thermo, p):
         src_fine_E[:, it] = np.interp(lnk_fine, lnk_ode, sources_E[:, it])
     print(f"Interpolated sources: {nk} → {nk_fine} k-modes")
 
-    # --- Line-of-sight integration ---
+    # --- Line-of-sight integration with precomputed Bessel tables ---
     print("Computing transfer functions (line-of-sight integration)...")
     ell_max = p['ell_max']
     ells_compute = np.unique(np.concatenate([
@@ -1173,12 +1209,15 @@ def compute_cls(bg, thermo, p):
     Delta_T = np.zeros((nell, nk_fine))
     Delta_E = np.zeros((nell, nk_fine))
 
-    # x_2d[ik, itau] = k * chi — precompute once (full grid for reference)
-    x_2d_full = k_fine[:, None] * chi_arr[None, :]   # shape (nk_fine, ntau)
+    # x_2d[ik, itau] = k * chi — precompute once
+    x_2d_full = k_fine[:, None] * chi_arr[None, :]
+
+    # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
+    x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
+        ells_compute, float(np.max(x_2d_full)) + 2.0, dx=0.20
+    )
 
     def _compute_ell_transfer(il, ell):
-        """Compute transfer functions for a single ell (thread-safe: writes to distinct row)."""
-        # Restrict k-range to where j_ℓ(kχ) is nonzero
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
         k_hi = (ell + 2000) / chi_star if chi_star > 0 else k_fine[-1]
@@ -1186,42 +1225,35 @@ def compute_cls(bg, thermo, p):
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
 
         x_2d = x_2d_full[ik_lo:ik_hi, :]
-        s_j0 = src_fine_j0[ik_lo:ik_hi, :]
-        s_j1 = src_fine_j1[ik_lo:ik_hi, :]
-        s_j2 = src_fine_j2[ik_lo:ik_hi, :]
-        s_E = src_fine_E[ik_lo:ik_hi, :]
-
-        nu = ell + 0.5
-        ell_factor = ell * (ell + 1)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            prefac = np.where(x_2d > 1e-30, np.sqrt(np.pi / (2.0 * x_2d)), 0.0)
-        Jnu = special.jv(nu, x_2d)
-        jl = prefac * Jnu
-
-        Jnu1 = special.jv(nu + 1, x_2d)
-        jl_next = prefac * Jnu1
-        with np.errstate(divide='ignore', invalid='ignore'):
-            jl_d = np.where(x_2d > 1e-30, ell / x_2d * jl - jl_next, 0.0)
+        jl = _interp_uniform_table(x_2d, x0_tab, inv_dx_tab, n_x_tab, jl_tab[il])
+        jl_next = _interp_uniform_table(x_2d, x0_tab, inv_dx_tab, n_x_tab, jl1_tab[il])
 
         with np.errstate(divide='ignore', invalid='ignore'):
+            inv_x = np.where(x_2d > 1e-30, 1.0 / x_2d, 0.0)
+            jl_d = np.where(x_2d > 1e-30, ell * inv_x * jl - jl_next, 0.0)
+            ell_factor = ell * (ell + 1)
             jl_dd = np.where(
                 x_2d > 1e-30,
-                -2.0 * jl_d / x_2d + (ell_factor / x_2d**2 - 1.0) * jl,
+                -2.0 * inv_x * jl_d + (ell_factor * inv_x * inv_x - 1.0) * jl,
                 0.0,
             )
 
-        integrand_T = s_j0 * jl + s_j1 * jl_d + s_j2 * jl_dd
-        integrand_E = s_E * jl
+        integrand_T = (src_fine_j0[ik_lo:ik_hi, :] * jl
+                     + src_fine_j1[ik_lo:ik_hi, :] * jl_d
+                     + src_fine_j2[ik_lo:ik_hi, :] * jl_dd)
+        integrand_E = src_fine_E[ik_lo:ik_hi, :] * jl
         Delta_T[il, ik_lo:ik_hi] = np.trapezoid(integrand_T, tau_out, axis=1)
         Delta_E[il, ik_lo:ik_hi] = np.trapezoid(integrand_E, tau_out, axis=1)
 
     with ThreadPoolExecutor() as pool:
-        futures = [pool.submit(_compute_ell_transfer, il, ell)
+        futures = [pool.submit(_compute_ell_transfer, il, int(ell))
                    for il, ell in enumerate(ells_compute)]
-        for i, f in enumerate(futures):
-            f.result()
+        for i, fut in enumerate(futures):
+            fut.result()
             if (i + 1) % 20 == 0 or i == 0:
                 print(f"  ℓ={ells_compute[i]} ({i+1}/{nell})")
+
+    del x_2d_full, jl_tab, jl1_tab
 
     # --- Power spectrum assembly ---
     # C_ℓ^XY = 4π ∫ d(ln k) P(k) Δ_ℓ^X(k) Δ_ℓ^Y(k)
