@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1k lines of readable Python. 1% accuracy in <1 minute runtime.
+in ~1k lines of readable Python. 
 
 Features:
   - Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch)
@@ -118,9 +118,7 @@ def setup_background(params):
 
 def grhoa2(a, bg):
     """Total 8πGρ a⁴ — the key quantity in the Friedmann equation."""
-    return (bg['grhog'] + bg['grhornomass']
-            + (bg['grhoc'] + bg['grhob']) * a
-            + bg['grhov'] * a**4)
+    return bg['grhog'] + bg['grhornomass'] + (bg['grhoc'] + bg['grhob']) * a + bg['grhov'] * a**4
 
 
 def dtauda(a, bg):
@@ -156,9 +154,8 @@ def compute_background(params):
 
 # ============================================================
 # RECOMBINATION
-# Peebles equation for hydrogen ionisation fraction x_e(z),
+# Full RECFAST: 3-variable ODE for x_H, x_He, T_mat
 # with Saha equilibrium at high redshift.
-# Then compute optical depth τ(η) and visibility function g(η).
 # ============================================================
 
 c_SI = c_km_s * 1e3                              # speed of light (m/s)
@@ -255,21 +252,12 @@ def compute_recombination(bg, params):
         x0 = 0.5 * (np.sqrt((rhs - 1)**2 + 4 * (1 + f_He) * rhs) - (rhs - 1))
         return min((x0 - 1.0) / f_He, 1.0)
 
-    def saha_H(z):
-        """H Saha: returns x_H (assumes He contribution to n_e negligible)."""
-        T = T_cmb * (1 + z)
-        rhs = (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1 / T) / Nnow
-        return min(0.5 * (np.sqrt(rhs**2 + 4 * rhs) - rhs), 1.0)
-
     # --- RECFAST ODE right-hand side ---
-    def recfast_rhs(z, y, saha_H_mode=False):
+    def recfast_rhs(z, y):
         """dy/dz for y = [x_H, x_He, T_mat]."""
         x_H = max(y[0], 0.0)
         x_He = max(y[1], 0.0)
         T_mat = max(y[2], 0.5)
-
-        if saha_H_mode:
-            x_H = saha_H(z)
 
         x = x_H + f_He * x_He
         T_rad = T_cmb * (1 + z)
@@ -278,29 +266,23 @@ def compute_recombination(bg, params):
         Hz = Hz_SI(z)
 
         # --- f1: Hydrogen Peebles equation ---
-        if saha_H_mode or x_H > 0.99:
-            f1 = 0.0
-        else:
-            t4 = T_mat / 1e4
-            Rdown = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)
-            Rup = Rdown * (CR * T_mat)**1.5 * np.exp(-CDB / T_mat)
+        # Full Peebles C factor is valid for all x_H: when x_H → 1,
+        # n_1s → 0 so C → fudge and the rate reduces to near-Saha.
+        t4 = T_mat / 1e4
+        Rdown = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)
+        Rup = Rdown * (CR * T_mat)**1.5 * np.exp(-CDB / T_mat)
 
-            K = CK / Hz * (1.0
-                + AGauss1 * np.exp(-((np.log(1 + z) - zGauss1) / wGauss1)**2)
-                + AGauss2 * np.exp(-((np.log(1 + z) - zGauss2) / wGauss2)**2))
-            fu = RECFAST_fudge
-            n_1s = n_H * max(1 - x_H, 1e-30)
+        K = CK / Hz * (1.0
+            + AGauss1 * np.exp(-((np.log(1 + z) - zGauss1) / wGauss1)**2)
+            + AGauss2 * np.exp(-((np.log(1 + z) - zGauss2) / wGauss2)**2))
+        fu = RECFAST_fudge
+        n_1s = n_H * max(1 - x_H, 1e-30)
 
-            if x_H > 0.985:
-                # Near-Saha rate (no Peebles bottleneck)
-                f1 = (x * x_H * n_H * Rdown
-                      - Rup * (1 - x_H) * np.exp(-CL / T_mat)) / (Hz * (1 + z))
-            else:
-                f1 = ((x * x_H * n_H * Rdown
-                       - Rup * (1 - x_H) * np.exp(-CL / T_mat))
-                      * (1 + K * Lambda_2s1s * n_1s)
-                      / (Hz * (1 + z) * (1.0 / fu + K * Lambda_2s1s * n_1s / fu
-                                         + K * Rup * n_1s)))
+        f1 = ((x * x_H * n_H * Rdown
+               - Rup * (1 - x_H) * np.exp(-CL / T_mat))
+              * (1 + K * Lambda_2s1s * n_1s)
+              / (Hz * (1 + z) * (1.0 / fu + K * Lambda_2s1s * n_1s / fu
+                                 + K * Rup * n_1s)))
 
         # --- f2: Helium singlet ODE ---
         if x_He < 1e-15:
@@ -425,70 +407,27 @@ def compute_recombination(bg, params):
     if he_ode_idx is None:
         he_ode_idx = len(z_arr) - 1
 
-    # Find where H Saha drops below 0.99
-    h_ode_z = None
-    for z in z_arr[he_ode_idx:]:
-        if z <= 0:
-            break
-        if saha_H(z) < 0.99:
-            h_ode_z = z
-            break
+    # --- Phase 2: Full 3-variable ODE from He departure to z=0 ---
+    # Radau (stiff solver) handles the H transition automatically;
+    # no need for separate Saha→ODE handoff for hydrogen.
+    z_ode = z_arr[he_ode_idx:]
+    z_ode = z_ode[z_ode >= 0]
 
-    # --- Phase 2: He ODE + T_mat ODE, H from Saha ---
-    z_phase2_start = z_arr[he_ode_idx]
-    z_phase2_end = h_ode_z if h_ode_z is not None else 0.0
-    z_phase2 = z_arr[(z_arr <= z_phase2_start) & (z_arr >= z_phase2_end)]
-
-    y0_phase2 = [xH_arr[he_ode_idx], xHe_arr[he_ode_idx],
-                 T_cmb * (1 + z_phase2_start)]
-
-    if len(z_phase2) > 1:
-        sol2 = integrate.solve_ivp(
-            lambda z, y: recfast_rhs(z, y, saha_H_mode=True),
-            [z_phase2[0], z_phase2[-1]], y0_phase2,
-            t_eval=z_phase2, method='Radau', rtol=1e-6, atol=1e-10,
+    if len(z_ode) > 1:
+        y0 = [xH_arr[he_ode_idx], xHe_arr[he_ode_idx],
+              T_cmb * (1 + z_ode[0])]
+        sol = integrate.solve_ivp(
+            recfast_rhs,
+            [z_ode[0], z_ode[-1]], y0,
+            t_eval=z_ode, method='Radau', rtol=1e-6, atol=1e-10,
             max_step=5.0,
         )
-        # Override x_H with Saha values
-        n_sol2 = sol2.y.shape[1]
-        idx_start = np.searchsorted(-z_arr, -z_phase2[0])
-        for j in range(n_sol2):
-            z_j = sol2.t[j]
-            sol2.y[0, j] = saha_H(z_j)
-            ii = idx_start + j
+        n_sol = sol.y.shape[1]
+        for j in range(n_sol):
+            ii = he_ode_idx + j
             if ii < len(z_arr):
-                xH_arr[ii] = sol2.y[0, j]
-                xHe_arr[ii] = sol2.y[1, j]
-
-    # --- Phase 3: Full 3-variable ODE ---
-    if h_ode_z is not None and h_ode_z > 0:
-        h_ode_idx = np.searchsorted(-z_arr, -h_ode_z)
-        z_phase3 = z_arr[h_ode_idx:]
-        z_phase3 = z_phase3[z_phase3 >= 0]
-
-        if len(z_phase3) > 1:
-            # Initial conditions from end of Phase 2
-            if len(z_phase2) > 1:
-                y0_p3 = [sol2.y[0, -1], sol2.y[1, -1], sol2.y[2, -1]]
-            else:
-                y0_p3 = [saha_H(h_ode_z), saha_He1(h_ode_z),
-                         T_cmb * (1 + h_ode_z)]
-
-            sol3 = integrate.solve_ivp(
-                lambda z, y: recfast_rhs(z, y, saha_H_mode=False),
-                [z_phase3[0], z_phase3[-1]], y0_p3,
-                t_eval=z_phase3, method='Radau', rtol=1e-6, atol=1e-10,
-                max_step=2.0,
-            )
-            n_sol = sol3.y.shape[1]
-            for j in range(n_sol):
-                ii = h_ode_idx + j
-                if ii < len(z_arr):
-                    xH_arr[ii] = sol3.y[0, j]
-                    xHe_arr[ii] = sol3.y[1, j]
-    else:
-        # No H ODE needed (shouldn't happen in practice)
-        pass
+                xH_arr[ii] = sol.y[0, j]
+                xHe_arr[ii] = sol.y[1, j]
 
     # Total electron fraction: x_e = x_H + f_He × x_He
     xe_total = xH_arr + f_He * xHe_arr
