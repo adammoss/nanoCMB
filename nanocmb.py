@@ -961,7 +961,7 @@ def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
 
-def _build_bessel_tables(ells_compute, x_max, dx=0.20):
+def _build_bessel_tables(ells_compute, x_max, dx):
     """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation."""
     n_x = int(np.ceil(x_max / dx)) + 2
     x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
@@ -1121,7 +1121,7 @@ def compute_cls(bg, thermo, params):
 
     # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
-        ells_compute, float(np.max(x_2d_full)) + 2.0, dx=0.20
+        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.15
     )
 
     def _compute_ell_transfer(il, ell):

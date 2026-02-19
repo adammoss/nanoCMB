@@ -39,10 +39,10 @@ Validated against CAMB (AccuracyBoost=3) with Planck 2018 best-fit parameters:
 
 | l range | TT (mean ratio) | TT (std) | EE (mean ratio) | EE (std) |
 |---------|:---:|:---:|:---:|:---:|
-| 2-30 | 0.998 | 0.5% | - | - |
-| 30-500 | 1.003 | 0.3% | 1.000 | 0.5% |
-| 500-2000 | 0.999 | 0.1% | 0.997 | 0.2% |
-| 2000-2500 | 0.994 | 0.2% | 0.993 | 0.4% |
+| 2-30 | 0.997 | 0.5% | - | - |
+| 30-500 | 1.001 | 0.3% | 0.999 | 0.4% |
+| 500-2000 | 0.998 | 0.1% | 0.996 | 0.2% |
+| 2000-2500 | 0.994 | 0.2% | 0.992 | 0.4% |
 
 ## What's inside
 
@@ -51,7 +51,7 @@ The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom narr
 1. **Background cosmology** -- Friedmann equation, conformal time, sound speed
 2. **Recombination** -- Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch), visibility function
 3. **Perturbations** -- Boltzmann hierarchy in synchronous gauge (CDM frame) with tight-coupling approximation
-4. **Line-of-sight integration** -- Multi-channel IBP decomposition (j_l, j_l', j_l'' channels) with jv-based Bessel functions
+4. **Line-of-sight integration** -- Multi-channel IBP decomposition (j_l, j_l', j_l'' channels) with precomputed Bessel tables
 5. **Power spectrum assembly** -- Primordial spectrum, k-integration, l-interpolation
 
 ## Approximations
