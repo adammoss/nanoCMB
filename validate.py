@@ -379,8 +379,8 @@ except Exception as e:
 try:
     print("Computing perturbation evolution comparison...")
     from nanocmb import (setup_perturbation_grid, adiabatic_ics,
-                            _boltzmann_rhs, IX_ETAK, IX_CLXC, IX_CLXB,
-                            IX_VB, IX_G, NVAR)
+                            _boltzmann_rhs, _cubic_eval, IX_ETAK, IX_CLXC,
+                            IX_CLXB, IX_VB, IX_G, NVAR)
     from scipy import integrate as sp_integrate
 
     pgrid = setup_perturbation_grid(bg, thermo)
@@ -393,7 +393,7 @@ try:
     tau_pert = tau_pert[tau_pert > 0.5]
 
     # Convert tau to z
-    a_pert = np.array([float(pgrid['a_of_tau'](t)) for t in tau_pert])
+    a_pert = np.array([float(_cubic_eval(pgrid['sp_a_x'], pgrid['sp_a_c'], t)) for t in tau_pert])
     z_pert = 1.0 / a_pert - 1.0
 
     # CAMB perturbation evolution (z must be in ascending order)
@@ -404,17 +404,15 @@ try:
             'delta_baryon', 'pi_photon', 'etak'])
 
     # nanoCMB evolution for each k
-    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
-                    bg['grhob'], bg['grhov']])
     nano_sols = {}
     for k in k_test:
         tau_start = min(0.1 / k, tau_pert[0] * 0.5)
         tau_start = max(tau_start, 0.1)
         y0 = adiabatic_ics(k, tau_start, bg, pgrid)
         sol = sp_integrate.solve_ivp(
-            lambda tau, y, _k=k: _boltzmann_rhs(tau, y, _k, bg5,
-                pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
-                pgrid['opacity_interp'].x, pgrid['opacity_interp'].c),
+            lambda tau, y, _k=k: _boltzmann_rhs(tau, y, _k, pgrid['bg_vec'],
+                pgrid['sp_a_x'], pgrid['sp_a_c'],
+                pgrid['sp_op_x'], pgrid['sp_op_c']),
             [tau_start, tau_pert[-1]], y0,
             t_eval=tau_pert, method='Radau', rtol=1e-5, atol=1e-8,
             max_step=20.0)

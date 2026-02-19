@@ -5,7 +5,7 @@ Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
 in ~1k lines of readable Python. 
 
 Features:
-  - Full RECFAST recombination (H + He ODEs, matter temperature, Hswitch)
+  - Full RECFAST recombination (H + He ODEs, matter temperature)
 
 Approximations:
   - Flat geometry (K = 0)
@@ -627,8 +627,12 @@ def setup_perturbation_grid(bg, thermo):
     opacity_interp = interpolate.CubicSpline(tau_ext, opac_ext)
 
     return {
-        'a_of_tau': a_of_tau,
-        'opacity_interp': opacity_interp,
+        'sp_a_x': a_of_tau.x,
+        'sp_a_c': a_of_tau.c,
+        'sp_op_x': opacity_interp.x,
+        'sp_op_c': opacity_interp.c,
+        'bg_vec': np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
+                            bg['grhob'], bg['grhov']]),
         'adotrad': adotrad,
         'grho_rad': grho_rad,
         'tau0': bg['tau0'],
@@ -654,13 +658,6 @@ def adiabatic_ics(k, tau_start, bg, pgrid):
     omtau = om * tau
 
     y0 = np.zeros(NVAR)
-
-    # CAMB's initv coefficients (before sign flip):
-    #   initv(i_eta) = -2*(1 - x²/12*(-10/Rp15 + 1))
-    #   initv(i_clxg) = -(1/3)*x²*(1 - omtau/5)
-    # After sign flip: InitVec = -initv (adiabatic convention)
-    # After y application: y(ix_etak) = -InitVec(i_eta)*k/2
-    # Combined: etak = -k*(1 - x²/12*(-10/Rp15 + 1))
 
     # Metric perturbation: etak = k × η_synchronous ≈ -k at leading order
     y0[IX_ETAK] = -k * (1.0 - x2 / 12.0 * (-10.0 / Rp15 + 1.0))
@@ -688,15 +685,9 @@ def adiabatic_ics(k, tau_start, bg, pgrid):
 
 
 @_jit
-def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
-    """Right-hand side of the Boltzmann hierarchy: dy/dτ.
-
-    Implements the synchronous gauge equations from CAMB's derivs() subroutine.
-    During tight coupling (early times, high opacity), only the photon monopole
-    and dipole are evolved; the quadrupole is computed algebraically.
-    """
-    # Background quantities from spline interpolation
-    grhog, grhornomass, grhoc, grhob, grhov = bg5[0], bg5[1], bg5[2], bg5[3], bg5[4]
+def _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c):
+    """Shared background+Einstein terms used by RHS and source construction."""
+    grhog, grhornomass, grhoc, grhob, grhov = bg_vec[0], bg_vec[1], bg_vec[2], bg_vec[3], bg_vec[4]
     a = _cubic_eval(sp_a_x, sp_a_c, tau)
     a2 = a * a
     grhog_t = grhog / a2
@@ -705,40 +696,50 @@ def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
     grhob_t = grhob / a
     grho_a2 = grhog_t + grhor_t + grhoc_t + grhob_t + grhov * a2
     adotoa = np.sqrt(grho_a2 / 3.0)
-    opacity = _cubic_eval(sp_op_x, sp_op_c, tau)
-    if opacity < 1e-30:
-        opacity = 1e-30
-    photbar = grhog_t / grhob_t
-    pb43 = 4.0 / 3.0 * photbar
 
-    k2 = k * k
-
-    # Extract state variables
     etak = y[IX_ETAK]
     clxc = y[IX_CLXC]
     clxb = y[IX_CLXB]
     vb = y[IX_VB]
-    clxg = y[IX_G]         # photon monopole δ_γ
-    qg = y[IX_G + 1]       # photon dipole
-    pig = y[IX_G + 2]      # photon quadrupole
-    clxr = y[IX_R]         # neutrino monopole δ_ν
-    qr = y[IX_R + 1]       # neutrino dipole
-    pir = y[IX_R + 2]      # neutrino quadrupole
+    clxg = y[IX_G]
+    qg = y[IX_G + 1]
+    pig = y[IX_G + 2]
+    clxr = y[IX_R]
+    qr = y[IX_R + 1]
+    pir = y[IX_R + 2]
+
+    k2 = k * k
+    dgrho = grhob_t * clxb + grhoc_t * clxc + grhog_t * clxg + grhor_t * clxr
+    dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
+    z = (0.5 * dgrho / k + etak) / adotoa
+    sigma = z + 1.5 * dgq / k2
+
+    return (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
+            dgrho, dgq, z, sigma,
+            etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir)
+
+
+@_jit
+def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
+    """Right-hand side of the Boltzmann hierarchy: dy/dτ.
+
+    Implements the synchronous gauge equations from CAMB's derivs() subroutine.
+    During tight coupling (early times, high opacity), only the photon monopole
+    and dipole are evolved; the quadrupole is computed algebraically.
+    """
+    # Background and Einstein-source terms
+    (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
+     dgrho, dgq, z, sigma,
+     etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir) = \
+        _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c)
+    opacity = max(_cubic_eval(sp_op_x, sp_op_c, tau), 1e-30)
+    photbar = grhog_t / grhob_t
+    pb43 = 4.0 / 3.0 * photbar
 
     # Determine if tight coupling is active
     tight_coupling = (k / opacity < 0.01) and (1.0 / (opacity * tau) < 0.01)
 
-    # Total density and velocity perturbations (Einstein constraint equations)
-    dgrho = grhob_t * clxb + grhoc_t * clxc + grhog_t * clxg + grhor_t * clxr
-    dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
-
-    # Synchronous gauge: z = ḣ/(2k), σ = metric shear
-    z = (0.5 * dgrho / k + etak) / adotoa
-    sigma = z + 1.5 * dgq / k2
-
-    # Polter: polarisation source Π = pig/10 + 3E₂/5
     E2 = y[IX_POL] if LMAXPOL >= 2 else 0.0
-    polter = pig / 10.0 + 9.0 / 15.0 * E2
 
     cothxor = 1.0 / tau
 
@@ -771,6 +772,8 @@ def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
 
     else:
         # Full Boltzmann hierarchy
+        # Polter: polarisation source Π = pig/10 + 3E₂/5
+        polter = pig / 10.0 + 9.0 / 15.0 * E2
         vbdot = -adotoa * vb - photbar * opacity * (4.0 / 3.0 * vb - qg)
         dy[IX_VB] = vbdot
 
@@ -825,7 +828,7 @@ def _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
     return dy
 
 
-def compute_source_functions(tau, y, k, bg, pgrid, thermo):
+def compute_source_functions(tau, y, k, pgrid, thermo):
     """Compute CMB source function building blocks at a single (k, τ) point.
 
     After integration by parts, the temperature source decomposes into three
@@ -833,29 +836,17 @@ def compute_source_functions(tau, y, k, bg, pgrid, thermo):
     and j_ℓ'' (quadrupole). Returns the coefficients for each channel plus
     the E-mode source.
     """
-    a = float(pgrid['a_of_tau'](tau))
-    a2 = a * a
-    grhog_t = bg['grhog'] / a2
-    grhor_t = bg['grhornomass'] / a2
-    grhoc_t = bg['grhoc'] / a
-    grhob_t = bg['grhob'] / a
-    adotoa = np.sqrt((grhog_t + grhor_t + grhoc_t + grhob_t + bg['grhov'] * a2) / 3.0)
-    opacity = max(float(pgrid['opacity_interp'](tau)), 1e-30)
+    (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
+     dgrho, dgq, z, sigma,
+     etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir) = _common_terms(
+        tau, y, k, pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c']
+    )
+    opacity = max(float(_cubic_eval(pgrid['sp_op_x'], pgrid['sp_op_c'], tau)), 1e-30)
     k2 = k * k
 
-    # State variables
-    etak = y[IX_ETAK]
-    clxb, vb = y[IX_CLXB], y[IX_VB]
-    clxg, qg, pig = y[IX_G], y[IX_G + 1], y[IX_G + 2]
-    clxr, qr, pir = y[IX_R], y[IX_R + 1], y[IX_R + 2]
     E2 = y[IX_POL] if LMAXPOL >= 2 else 0.0
 
-    # Metric perturbations from Einstein constraint equations
-    dgrho = grhob_t * clxb + grhoc_t * y[IX_CLXC] + grhog_t * clxg + grhor_t * clxr
-    dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
     dgpi = grhog_t * pig + grhor_t * pir
-    z = (0.5 * dgrho / k + etak) / adotoa
-    sigma = z + 1.5 * dgq / k2
     phi = -((dgrho + 3.0 * dgq * adotoa / k) + dgpi) / (2.0 * k2)
 
     # Φ̇ for the ISW effect — compute pigdot, pirdot directly from the
@@ -905,22 +896,21 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
       j_ℓ'': visibility×Π                               [quadrupole]
     """
     # Starting time: kτ_start = 0.1 (safely in the super-horizon regime)
-    tau_start = min(0.1 / k, tau_out[0] * 0.5)
+    tau_start = min(0.01 / k, tau_out[0] * 0.5)
     tau_start = max(tau_start, 0.1)  # don't start before τ = 0.1 Mpc
 
     # Initial conditions
     y0 = adiabatic_ics(k, tau_start, bg, pgrid)
 
     # Evolve with LSODA (auto-switches Adams/BDF for non-stiff/stiff regimes)
-    bg5 = np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
-                    bg['grhob'], bg['grhov']])
-    sp_a_x = pgrid['a_of_tau'].x
-    sp_a_c = pgrid['a_of_tau'].c
-    sp_op_x = pgrid['opacity_interp'].x
-    sp_op_c = pgrid['opacity_interp'].c
+    bg_vec = pgrid['bg_vec']
+    sp_a_x = pgrid['sp_a_x']
+    sp_a_c = pgrid['sp_a_c']
+    sp_op_x = pgrid['sp_op_x']
+    sp_op_c = pgrid['sp_op_c']
 
     sol = integrate.solve_ivp(
-        lambda tau, y: _boltzmann_rhs(tau, y, k, bg5, sp_a_x, sp_a_c, sp_op_x, sp_op_c),
+        lambda tau, y: _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c),
         [tau_start, tau_out[-1]],
         y0,
         t_eval=tau_out,
@@ -931,8 +921,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 
     ntau = len(tau_out)
     if not sol.success:
-        print(f"  Warning: ODE solver failed for k={k:.4e}: {sol.message}")
-        return tuple(np.zeros(ntau) for _ in range(4))
+        raise RuntimeError(f"ODE solver failed for k={k:.4e}: {sol.message}")
 
     # --- Extract source function building blocks at each time step ---
     ISW_arr, monopole_arr, sigma_plus_vb_arr, vis_arr, polter_arr, src_E = \
@@ -940,7 +929,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     for i, tau in enumerate(tau_out):
         (ISW_arr[i], monopole_arr[i], sigma_plus_vb_arr[i],
          vis_arr[i], polter_arr[i], src_E[i]) = \
-            compute_source_functions(tau, sol.y[:, i], k, bg, pgrid, thermo)
+            compute_source_functions(tau, sol.y[:, i], k, pgrid, thermo)
 
     # --- Assemble temperature source (multi-channel IBP decomposition) ---
     # After integration by parts on visibility derivatives g' and g'', the
@@ -967,6 +956,7 @@ def _pool_init(bg, thermo, pgrid, tau_out):
     global _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out
     _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out = bg, thermo, pgrid, tau_out
 
+
 def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
@@ -981,19 +971,22 @@ def _build_bessel_tables(ells_compute, x_max, dx=0.20):
     nell = len(ells_compute)
     jl_tab = np.empty((nell, n_x))
     jl1_tab = np.empty((nell, n_x))
+    # Build a unique set of required orders: l and l+1 for every requested l.
+    l_unique = np.unique(np.concatenate([ells_compute, ells_compute + 1]))
+    n_unique = len(l_unique)
+    j_unique = np.empty((n_unique, n_x))
+    l_to_idx = {int(l): i for i, l in enumerate(l_unique)}
 
-    for i, ell in enumerate(ells_compute):
+    for iu, ell in enumerate(l_unique):
         nu = ell + 0.5
         jl = pref * special.jv(nu, x_tab)
-        jl1 = pref * special.jv(nu + 1.0, x_tab)
         # Correct small-x limits for stability of interpolation near origin.
-        if ell == 0:
-            jl[0] = 1.0
-        else:
-            jl[0] = 0.0
-        jl1[0] = 0.0
-        jl_tab[i, :] = jl
-        jl1_tab[i, :] = jl1
+        jl[0] = 1.0 if ell == 0 else 0.0
+        j_unique[iu, :] = jl
+
+    for i, ell in enumerate(ells_compute):
+        jl_tab[i, :] = j_unique[l_to_idx[int(ell)], :]
+        jl1_tab[i, :] = j_unique[l_to_idx[int(ell + 1)], :]
 
     return x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab
 
@@ -1026,6 +1019,7 @@ def compute_cls(bg, thermo, params):
     tau_late = np.linspace(tau_star + 200, tau0 - 10, 120)
     z_rev = thermo['z_arr'][::-1]
     tau_rev = thermo['tau_arr'][::-1]
+    # Extra timesteps for reionisation region.
     z_re = thermo['z_reion']
     z_re_lo = max(0.01, z_re - 6.0)
     z_re_hi = z_re + 6.0
@@ -1058,15 +1052,12 @@ def compute_cls(bg, thermo, params):
 
     # Warmup JIT (no-op without numba) before forking workers
     _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
-                   np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
-                             bg['grhob'], bg['grhov']]),
-                   pgrid['a_of_tau'].x, pgrid['a_of_tau'].c,
-                   pgrid['opacity_interp'].x, pgrid['opacity_interp'].c)
+                   pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c'],
+                   pgrid['sp_op_x'], pgrid['sp_op_c'])
 
     try:
         from multiprocessing import Pool, cpu_count
         ncpu = cpu_count()
-        print(f"  Using {ncpu} cores")
         with Pool(ncpu, initializer=_pool_init, initargs=_args) as pool:
             results = pool.map(_pool_solve_k, k_arr)
     except (ImportError, OSError):
@@ -1080,8 +1071,7 @@ def compute_cls(bg, thermo, params):
     # --- Interpolate source functions to finer k-grid ---
     # Source functions are smooth in k, but the transfer function Δ_ℓ(k)
     # oscillates rapidly due to Bessel function ringing. A fine k-grid is
-    # needed for accurate ∫|Δ|² d(ln k) integration (CAMB uses ~3000 k-pts).
-    # Interpolate sources from the ODE grid to a ~5× denser grid.
+    # needed for accurate ∫|Δ|² d(ln k) integration .
     nk_fine = 3000
     # Start dense linear spacing at k=0.002 (covers ℓ>30 peak contributions)
     k_lin_start = 0.002
@@ -1167,10 +1157,6 @@ def compute_cls(bg, thermo, params):
                    for il, ell in enumerate(ells_compute)]
         for i, fut in enumerate(futures):
             fut.result()
-            if (i + 1) % 20 == 0 or i == 0:
-                print(f"  ℓ={ells_compute[i]} ({i+1}/{nell})")
-
-    del x_2d_full, jl_tab, jl1_tab
 
     # --- Power spectrum assembly ---
     # C_ℓ^XY = 4π ∫ d(ln k) P(k) Δ_ℓ^X(k) Δ_ℓ^Y(k)
@@ -1211,7 +1197,6 @@ def compute_cls(bg, thermo, params):
         'Dl_TT': Dl_TT,    # D_ℓ^TT = ℓ(ℓ+1)Cℓ^TT/(2π) in μK²
         'Dl_EE': Dl_EE,
         'Dl_TE': Dl_TE,
-        'k_arr': k_arr,       # ODE k-grid (coarse, for source functions)
         'k_fine': k_fine,     # Fine k-grid (for transfer functions)
         'ells_compute': ells_compute,
         'Delta_T': Delta_T,   # Transfer functions on k_fine grid
