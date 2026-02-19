@@ -71,48 +71,48 @@ params = {
 # Integrate the Friedmann equation to get H(a), η(a), χ(z)
 # ============================================================
 
-def setup_background(p):
+def setup_background(params):
     """Precompute background density parameters from cosmological parameters.
 
     All densities stored in CAMB convention: grho_i such that
     grhoa2 = Σ grho_i × a^(4-n_i) represents 8πGρ_tot a⁴,
     giving H(a) = √(grhoa2/3) / a² and dη/da = √(3/grhoa2).
     """
-    h = p['h']
+    h = params['h']
     H0 = 100 * h / c_km_s                          # H₀ in Mpc⁻¹ (c=1)
     grhocrit_h2 = 3 * (100.0 / c_km_s)**2          # 3(H₁₀₀/c)² in Mpc⁻²
 
     # Photon density: ρ_γ = (4σ_SB/c) T⁴, then Ω_γh² = ρ_γ/ρ_crit,100
-    T_cmb = p['T_cmb']
+    T_cmb = params['T_cmb']
     rho_gamma = 4 * sigma_SB / (c_km_s * 1e3)**3 * T_cmb**4  # J/m³ / c² → kg/m³
     H100_SI = 100 * 1e3 / Mpc_in_m
     rho_crit_100 = 3 * H100_SI**2 / (8 * np.pi * G)
     omega_gamma = rho_gamma / rho_crit_100
 
     grhog = grhocrit_h2 * omega_gamma                           # photons (∝ a⁻⁴)
-    grhornomass = grhog * 7/8 * (4/11)**(4/3) * p['N_eff']     # massless neutrinos
-    grhoc = grhocrit_h2 * p['omega_c_h2']                       # CDM (∝ a⁻³)
-    grhob = grhocrit_h2 * p['omega_b_h2']                       # baryons (∝ a⁻³)
+    grhornomass = grhog * 7/8 * (4/11)**(4/3) * params['N_eff']  # massless neutrinos
+    grhoc = grhocrit_h2 * params['omega_c_h2']                   # CDM (∝ a⁻³)
+    grhob = grhocrit_h2 * params['omega_b_h2']                   # baryons (∝ a⁻³)
 
     # Cosmological constant: Ω_Λ = 1 - Ω_m - Ω_r (flat universe)
-    omega_m = (p['omega_c_h2'] + p['omega_b_h2']) / h**2
-    omega_r = omega_gamma * (1 + 7/8 * (4/11)**(4/3) * p['N_eff']) / h**2
+    omega_m = (params['omega_c_h2'] + params['omega_b_h2']) / h**2
+    omega_r = omega_gamma * (1 + 7/8 * (4/11)**(4/3) * params['N_eff']) / h**2
     grhov = grhocrit_h2 * (1 - omega_m - omega_r) * h**2        # Λ (constant)
 
     # Thomson scattering: κ̇ = x_e × akthom / a²
-    rho_b_SI = p['omega_b_h2'] * rho_crit_100
-    n_H_Mpc = (1 - p['Y_He']) * rho_b_SI / m_H * Mpc_in_m**3
+    rho_b_SI = params['omega_b_h2'] * rho_crit_100
+    n_H_Mpc = (1 - params['Y_He']) * rho_b_SI / m_H * Mpc_in_m**3
     akthom = (sigma_T / Mpc_in_m**2) * n_H_Mpc
 
     # Helium fraction by number: f_He = Y/(not4*(1-Y)) = n_He/n_H
-    f_He = p['Y_He'] / (not4 * (1 - p['Y_He']))
+    f_He = params['Y_He'] / (not4 * (1 - params['Y_He']))
 
     return {
         'H0': H0, 'h': h,
         'grhog': grhog, 'grhornomass': grhornomass,
         'grhoc': grhoc, 'grhob': grhob, 'grhov': grhov,
         'akthom': akthom, 'f_He': f_He,
-        'Y_He': p['Y_He'], 'T_cmb': T_cmb,
+        'Y_He': params['Y_He'], 'T_cmb': T_cmb,
     }
 
 
@@ -147,9 +147,9 @@ def sound_speed_squared(a, bg):
     return 1.0 / (3.0 * (1.0 + R))
 
 
-def compute_background(p):
+def compute_background(params):
     """Compute background quantities: η₀, sound horizon, etc."""
-    bg = setup_background(p)
+    bg = setup_background(params)
     bg['tau0'] = conformal_time(1.0, bg)
     return bg
 
@@ -209,7 +209,7 @@ a_rad = 4 * sigma_SB / c_SI                       # radiation constant (J/m³/K�
 CT = (8.0 / 3.0) * (sigma_T / (m_e * c_SI)) * a_rad  # Compton cooling (s⁻¹ K⁻⁴)
 
 
-def compute_recombination(bg, p):
+def compute_recombination(bg, params):
     """Solve ionisation history x_e(z) using full RECFAST.
 
     Three-variable ODE for hydrogen ionisation (x_H), helium ionisation (x_He),
@@ -229,11 +229,11 @@ def compute_recombination(bg, p):
     # Present-day hydrogen number density (m⁻³)
     H100_SI = 100 * 1e3 / Mpc_in_m
     rho_crit_100 = 3 * H100_SI**2 / (8 * np.pi * G)
-    Nnow = (1 - bg['Y_He']) * (p['omega_b_h2'] * rho_crit_100) / m_H
+    Nnow = (1 - bg['Y_He']) * (params['omega_b_h2'] * rho_crit_100) / m_H
 
     # Cosmological parameters for dH/dz in T_mat equation
     H0_SI = bg['H0'] * c_SI / Mpc_in_m
-    omega_m = (p['omega_b_h2'] + p['omega_c_h2']) / p['h']**2
+    omega_m = (params['omega_b_h2'] + params['omega_c_h2']) / params['h']**2
     a_eq = (bg['grhog'] + bg['grhornomass']) / (bg['grhoc'] + bg['grhob'])
     z_eq = 1.0 / a_eq - 1.0
 
@@ -503,7 +503,7 @@ def compute_recombination(bg, p):
     return z_arr, xe_total
 
 
-def compute_thermodynamics(bg, p):
+def compute_thermodynamics(bg, params):
     """Build thermodynamic tables: opacity, optical depth, visibility function.
 
     The visibility function g(η) = κ̇ e^{-τ} tells us the probability that a CMB
@@ -511,7 +511,7 @@ def compute_thermodynamics(bg, p):
     last scattering, and its width determines the thickness of that surface
     (which causes diffusion damping of small-scale anisotropies).
     """
-    z_arr, xe_arr = compute_recombination(bg, p)
+    z_arr, xe_arr = compute_recombination(bg, params)
 
     # Add reionisation: CAMB tanh model (Heflag=6 equivalent)
     # H reion: x_e = (fraction - xstart) × (1 + tanh(xod)) / 2 + xstart
@@ -563,7 +563,7 @@ def compute_thermodynamics(bg, p):
         return integrate.quad(integrand, 0, z_reion_start, limit=200)[0]
 
     # Bisection to find z_re matching τ_reion
-    target_tau = p['tau_reion']
+    target_tau = params['tau_reion']
     z_re_low, z_re_high = 2.0, 30.0
     for _ in range(60):
         z_re_mid = 0.5 * (z_re_low + z_re_high)
@@ -1091,7 +1091,7 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
-def compute_cls(bg, thermo, p):
+def compute_cls(bg, thermo, params):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
@@ -1189,7 +1189,7 @@ def compute_cls(bg, thermo, p):
 
     # --- Line-of-sight integration with precomputed Bessel tables ---
     print("Computing transfer functions (line-of-sight integration)...")
-    ell_max = p['ell_max']
+    ell_max = params['ell_max']
     ells_compute = np.unique(np.concatenate([
         np.arange(2, 16, 1),
         np.arange(17, 39, 2),
@@ -1258,9 +1258,9 @@ def compute_cls(bg, thermo, p):
     # --- Power spectrum assembly ---
     # C_ℓ^XY = 4π ∫ d(ln k) P(k) Δ_ℓ^X(k) Δ_ℓ^Y(k)
     print("Assembling power spectra...")
-    k_pivot = p['k_pivot']
-    A_s = p['A_s']
-    n_s = p['n_s']
+    k_pivot = params['k_pivot']
+    A_s = params['A_s']
+    n_s = params['n_s']
     # Primordial power spectrum: P(k) = A_s × (k/k_pivot)^(n_s - 1)
     Pk = A_s * (k_fine / k_pivot)**(n_s - 1.0)
 
@@ -1278,7 +1278,7 @@ def compute_cls(bg, thermo, p):
     Cl_TE *= norm * np.sqrt(ctnorm)
 
     # Convert from dimensionless (ΔT/T)² to μK²
-    T0_muK2 = (p['T_cmb'] * 1e6)**2
+    T0_muK2 = (params['T_cmb'] * 1e6)**2
     Cl_TT *= T0_muK2
     Cl_EE *= T0_muK2
     Cl_TE *= T0_muK2
