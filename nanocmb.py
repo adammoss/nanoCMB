@@ -217,8 +217,8 @@ def compute_recombination(bg, params):
       z > 8000:  fully ionised (x_H=1, x_He=1, He doubly ionised)
       5000–8000: He++ → He+ Saha
       3500–5000: He singly ionised, H fully ionised
-      < 3500:    He+ → He0 Saha until x_He < 0.99, then He ODE
-                 H Saha until x_H < 0.99, then H Peebles ODE
+      < 3500:    He+ → He0 Saha until x_He < 0.99, then full
+                 3-variable ODE (x_H, x_He, T_mat) to z=0
     """
     T_cmb = bg['T_cmb']
     f_He = bg['f_He']
@@ -266,8 +266,6 @@ def compute_recombination(bg, params):
         Hz = Hz_SI(z)
 
         # --- f1: Hydrogen Peebles equation ---
-        # Full Peebles C factor is valid for all x_H: when x_H → 1,
-        # n_1s → 0 so C → fudge and the rate reduces to near-Saha.
         t4 = T_mat / 1e4
         Rdown = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)
         Rup = Rdown * (CR * T_mat)**1.5 * np.exp(-CDB / T_mat)
@@ -302,7 +300,7 @@ def compute_recombination(bg, params):
             pHe_s = ((1 - np.exp(-tauHe_s)) / tauHe_s
                      if tauHe_s > 1e-7 else 1.0 - tauHe_s / 2.0)
 
-            # Singlet K_He with H continuum opacity (Heflag >= 2)
+            # Singlet K_He with H continuum opacity
             if x_H < 0.9999999:
                 Doppler_s = c_SI * L_He_2p * np.sqrt(2 * k_B * T_mat / (m_H * not4 * c_SI**2))
                 gamma_2Ps = (3 * A2P_s * f_He * (1 - x_He) * c_SI**2
@@ -320,7 +318,7 @@ def compute_recombination(bg, params):
                      * (1 + K_He * (Lambda_He + Rup_He)
                         * n_He_ground * He_Boltz)))
 
-            # Triplet channel (Heflag >= 3, gate on x_He as in RECFAST)
+            # Triplet channel
             if x_He > 5e-9:
                 a_trip = 10.0**(-16.306)
                 b_trip = 0.761
@@ -332,7 +330,7 @@ def compute_recombination(bg, params):
                 pHe_t = ((1 - np.exp(-tauHe_t)) / tauHe_t
                          if tauHe_t > 1e-7 else 1.0 - tauHe_t / 2.0)
 
-                # Triplet C factor with H continuum opacity (Heflag 6)
+                # Triplet C factor with H continuum opacity
                 if x_H < 0.99999:
                     Doppler_t = c_SI * L_He_2Pt * np.sqrt(2 * k_B * T_mat / (m_H * not4 * c_SI**2))
                     gamma_2Pt = (3 * A2P_t * f_He * (1 - x_He) * c_SI**2
@@ -379,25 +377,29 @@ def compute_recombination(bg, params):
     z_arr = np.linspace(z_start, z_end, nz + 1)
     xH_arr = np.ones(nz + 1)
     xHe_arr = np.ones(nz + 1)
+    xe_total = np.empty(nz + 1)
 
     # --- Phase 1: Saha equilibrium ---
-    # Scan forward (decreasing z) to find where He and H depart from Saha
+    # Scan forward (decreasing z) to find where He departs from Saha.
     he_ode_idx = None
     for i, z in enumerate(z_arr):
-        if z > 8000:
+        if z > 8000.0:
             xH_arr[i] = 1.0
             xHe_arr[i] = 1.0
-        elif z > 5000:
-            x0 = saha_He2(z)
-            xH_arr[i] = 1.0
-            xHe_arr[i] = max((x0 - 1.0) / f_He, 1.0) if f_He > 0 else 1.0
-        elif z > 3500:
+            xe_total[i] = 1.0 + 2.0 * f_He
+        elif z > 5000.0:
             xH_arr[i] = 1.0
             xHe_arr[i] = 1.0
+            xe_total[i] = saha_He2(z)
+        elif z > 3500.0:
+            xH_arr[i] = 1.0
+            xHe_arr[i] = 1.0
+            xe_total[i] = 1.0 + f_He
         elif z > 0:
             x_He = saha_He1(z)
             xHe_arr[i] = x_He
             xH_arr[i] = 1.0
+            xe_total[i] = 1.0 + f_He * x_He
             if x_He < 0.99:
                 he_ode_idx = i
                 break
@@ -408,7 +410,7 @@ def compute_recombination(bg, params):
         he_ode_idx = len(z_arr) - 1
 
     # --- Phase 2: Full 3-variable ODE from He departure to z=0 ---
-    # Radau (stiff solver) handles the H transition automatically;
+    # Stiff solver handles the H transition automatically;
     # no need for separate Saha→ODE handoff for hydrogen.
     z_ode = z_arr[he_ode_idx:]
     z_ode = z_ode[z_ode >= 0]
@@ -429,15 +431,8 @@ def compute_recombination(bg, params):
                 xH_arr[ii] = sol.y[0, j]
                 xHe_arr[ii] = sol.y[1, j]
 
-    # Total electron fraction: x_e = x_H + f_He × x_He
-    xe_total = xH_arr + f_He * xHe_arr
-
-    # At z > 5000, He is (partially) doubly ionised — add extra electrons
-    for i, z in enumerate(z_arr):
-        if z > 8000:
-            xe_total[i] = 1.0 + 2 * f_He
-        elif z > 5000:
-            xe_total[i] = saha_He2(z)
+    # For the recombination phase, x_e = x_H + f_He * x_He.
+    xe_total[he_ode_idx:] = xH_arr[he_ode_idx:] + f_He * xHe_arr[he_ode_idx:]
 
     return z_arr, xe_total
 
