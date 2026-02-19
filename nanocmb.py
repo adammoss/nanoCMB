@@ -22,6 +22,7 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 
 import numpy as np
 from scipy import integrate, interpolate, special
+from scipy import optimize
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -447,45 +448,30 @@ def compute_thermodynamics(bg, params):
     """
     z_arr, xe_arr = compute_recombination(bg, params)
 
-    # Add reionisation: CAMB tanh model (Heflag=6 equivalent)
-    # H reion: x_e = (fraction - xstart) × (1 + tanh(xod)) / 2 + xstart
-    # He reion: x_e += f_He × (1 + tanh((z_He - z) / δz_He)) / 2
-    # where xod = ((1+z_re)^1.5 - (1+z)^1.5) / (1.5×(1+z_re)^0.5 × δz)
+    # Add reionisation: CAMB tanh model.
     f_He = bg['f_He']
-    f_re = 1.0 + f_He  # Full ionisation: H + singly-ionised He
-
-    # Second helium reionisation (HeII → HeIII)
-    he_reion_z = 3.5       # midpoint redshift
-    he_reion_dz = 0.4      # width
-    he_reion_zstart = he_reion_z + 5 * he_reion_dz  # 5.5
-
-    def second_helium_xe(z):
-        """HeII→HeIII reionisation: adds f_He at z < he_reion_zstart."""
-        xod = (he_reion_z - z) / he_reion_dz
-        tgh = np.where(xod > 100, 1.0, np.tanh(xod))
-        return np.where(z < he_reion_zstart, f_He * (tgh + 1) / 2, 0.0)
-
     delta_z = 0.5
+    he_reion_z = 3.5
+    he_reion_dz = 0.4
+    he_reion_zstart = he_reion_z + 5 * he_reion_dz
+    f_re = 1.0 + f_He  # Full ionisation: H + singly-ionised He
+    z_rev = z_arr[::-1]
+    xe_rev = xe_arr[::-1]
 
-    # Find z_re by bisection to match input τ_reion
-    def reion_xe(z_re, z_eval):
-        """Pure reionisation model x_e (tanh + He reion), without recombination stitching."""
+    def build_reion_xe(z_eval, z_re):
+        """Pure reionisation model x_e(z): H tanh + second He reion."""
         z_reion_start = z_re + 8 * delta_z
-        x_e_freeze = np.interp(z_reion_start, z_arr[::-1], xe_arr[::-1])
-        WindowVarMid = (1 + z_re)**1.5
-        WindowVarDelta = 1.5 * (1 + z_re)**0.5 * delta_z
-        xod = (WindowVarMid - (1 + z_eval)**1.5) / WindowVarDelta
-        xod = np.clip(xod, -100, 100)
+        x_e_freeze = np.interp(z_reion_start, z_rev, xe_rev)
+        window_var_mid = (1 + z_re)**1.5
+        window_var_delta = 1.5 * (1 + z_re)**0.5 * delta_z
+        xod = np.clip((window_var_mid - (1 + z_eval)**1.5) / window_var_delta, -100, 100)
         x_H_reion = (f_re - x_e_freeze) * (np.tanh(xod) + 1) / 2 + x_e_freeze
-        return x_H_reion + second_helium_xe(z_eval)
-
-    def apply_reionisation(z_re):
-        """Apply CAMB-style tanh reionisation and return modified x_e array."""
-        x_reion = reion_xe(z_re, z_arr)
-        return np.where(x_reion > xe_arr, x_reion, xe_arr)
+        xod_he = np.clip((he_reion_z - z_eval) / he_reion_dz, -100, 100)
+        x_he_extra = np.where(z_eval < he_reion_zstart, f_He * (np.tanh(xod_he) + 1) / 2, 0.0)
+        return x_H_reion + x_he_extra
 
     def compute_reion_optical_depth(z_re):
-        """Compute optical depth from z=0 to z_reion_start using Romberg integration.
+        """Compute optical depth from z=0 to z_reion_start using quadrature.
 
         Uses the pure reionisation model x_e (not stitched), matching CAMB's
         GetReionizationOptDepth which integrates Reion%x_e from 0 to zstart.
@@ -493,20 +479,19 @@ def compute_thermodynamics(bg, params):
         z_reion_start = z_re + 8 * delta_z
         def integrand(z):
             a = 1.0 / (1 + z)
-            return reion_xe(z_re, np.atleast_1d(z))[0] * bg['akthom'] * dtauda(a, bg)
+            return build_reion_xe(z, z_re) * bg['akthom'] * dtauda(a, bg)
         return integrate.quad(integrand, 0, z_reion_start, limit=200)[0]
 
-    # Bisection to find z_re matching τ_reion
+    # Solve for z_re matching target τ_reion.
     target_tau = params['tau_reion']
     z_re_low, z_re_high = 2.0, 30.0
-    for _ in range(60):
-        z_re_mid = 0.5 * (z_re_low + z_re_high)
-        tau_test = compute_reion_optical_depth(z_re_mid)
-        if tau_test > target_tau:
-            z_re_high = z_re_mid
-        else:
-            z_re_low = z_re_mid
-    z_re = 0.5 * (z_re_low + z_re_high)
+    def tau_residual(z_re):
+        return compute_reion_optical_depth(z_re) - target_tau
+    f_low = tau_residual(z_re_low)
+    f_high = tau_residual(z_re_high)
+    if f_low * f_high > 0:
+        raise RuntimeError("tau_reion root not bracketed in z_re range [2, 30].")
+    z_re = optimize.brentq(tau_residual, z_re_low, z_re_high, xtol=1e-8, rtol=1e-8)
 
     # Refine z_arr in the reionisation region (CAMB adds ~50 steps here)
     z_reion_lo = max(0.01, z_re - 8 * delta_z)
@@ -519,7 +504,7 @@ def compute_thermodynamics(bg, params):
     z_arr = z_new
     xe_arr = xe_new
 
-    xe_final = apply_reionisation(z_re)
+    xe_final = np.maximum(build_reion_xe(z_arr, z_re), xe_arr)
 
     # Now build conformal time grid and thermodynamic quantities
     # Convert z grid to conformal time grid
@@ -538,9 +523,7 @@ def compute_thermodynamics(bg, params):
     exptau = np.exp(-tau_optical)
     visibility = opacity * exptau
 
-    # Build interpolators on the conformal time grid
-    # (reverse arrays so η is increasing for interpolation — it already is since
-    # z_arr goes from high z to 0, so τ_arr goes from small η to large η)
+    # Build interpolators on the conformal time grid (τ_arr is increasing).
     thermo = {
         'z_arr': z_arr,
         'a_arr': a_arr,
