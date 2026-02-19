@@ -1001,6 +1001,46 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
+def build_tau_out(thermo, tau0, lo=-80.0, hi=320.0, n_early=50, n_rec=1000, n_late=100, n_re=80):
+    """Build the piecewise conformal-time grid used for source output.
+
+    Dense sampling around recombination (tau_star) captures the narrow
+    visibility peak, with extra points around reionization for low-ell
+    polarisation.
+    """
+    tau_star = thermo['tau_star']
+    tau_early = np.linspace(1.0, tau_star + lo, n_early)
+    tau_rec = np.linspace(tau_star + lo, tau_star + hi, n_rec)
+    tau_late = np.linspace(tau_star + hi, tau0 - 10, n_late)
+
+    z_rev = thermo['z_arr'][::-1]
+    tau_rev = thermo['tau_arr'][::-1]
+    z_re = thermo['z_reion']
+    z_re_lo = max(0.01, z_re - 6.0)
+    z_re_hi = z_re + 6.0
+    tau_re_lo = np.interp(z_re_lo, z_rev, tau_rev)
+    tau_re_hi = np.interp(z_re_hi, z_rev, tau_rev)
+    tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), n_re)
+
+    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
+    tau_out = tau_out[(tau_out > 0.1) & (tau_out < tau0 - 1)]
+    return tau_out
+
+
+def build_k_arr(k_min=0.5e-4, k_max=0.45, n_low=24, n_mid=180, n_mid_hi=70, n_high=50):
+    """Build the ODE k-grid for perturbation/source evolution.
+
+    The ODE grid only resolves acoustic structure in source functions
+    (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). Bessel ringing is handled later by
+    interpolation to a finer k-grid for LOS integration.
+    """
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), n_low)
+    k_mid = np.linspace(0.008, 0.18, n_mid)
+    k_mid_hi = np.linspace(0.18, 0.30, n_mid_hi)
+    k_high = np.linspace(0.30, k_max, n_high)
+    return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
+
+
 def compute_cls(bg, thermo, params):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
@@ -1014,35 +1054,12 @@ def compute_cls(bg, thermo, params):
 
     # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
-    tau_early = np.linspace(1.0, tau_star - 100, 60)
-    tau_rec = np.linspace(tau_star - 100, tau_star + 200, 500)
-    tau_late = np.linspace(tau_star + 200, tau0 - 10, 120)
-    z_rev = thermo['z_arr'][::-1]
-    tau_rev = thermo['tau_arr'][::-1]
-    # Extra timesteps for reionisation region.
-    z_re = thermo['z_reion']
-    z_re_lo = max(0.01, z_re - 6.0)
-    z_re_hi = z_re + 6.0
-    tau_re_lo = np.interp(z_re_lo, z_rev, tau_rev)
-    tau_re_hi = np.interp(z_re_hi, z_rev, tau_rev)
-    tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), 80)
-    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
-    tau_out = tau_out[(tau_out > 0.5) & (tau_out < tau0 - 1)]
+    tau_out = build_tau_out(thermo, tau0)
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
 
     # --- k-sampling ---
-    k_min = 0.5e-4
-    k_max = 0.45
-
-    # The ODE grid only needs to resolve the acoustic pattern in source functions
-    # (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). The finer k-grid for Bessel oscillation
-    # resolution is handled by interpolation below. ~200 modes gives >10 pts/oscillation.
-    k_low = np.logspace(np.log10(k_min), np.log10(0.008), 24)
-    k_mid = np.linspace(0.008, 0.18, 180)
-    k_mid_hi = np.linspace(0.18, 0.30, 70)
-    k_high = np.linspace(0.30, k_max, 50)
-    k_arr = np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
+    k_arr = build_k_arr()
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
 
