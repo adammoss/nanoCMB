@@ -1104,10 +1104,10 @@ def compute_cls(bg, thermo, params):
     src_fine_j2 = np.zeros((nk_fine, ntau))
     src_fine_E = np.zeros((nk_fine, ntau))
     for it in range(ntau):
-        src_fine_j0[:, it] = np.interp(lnk_fine, lnk_ode, sources_j0[:, it])
-        src_fine_j1[:, it] = np.interp(lnk_fine, lnk_ode, sources_j1[:, it])
-        src_fine_j2[:, it] = np.interp(lnk_fine, lnk_ode, sources_j2[:, it])
-        src_fine_E[:, it] = np.interp(lnk_fine, lnk_ode, sources_E[:, it])
+        src_fine_j0[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j0[:, it])(lnk_fine)
+        src_fine_j1[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j1[:, it])(lnk_fine)
+        src_fine_j2[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j2[:, it])(lnk_fine)
+        src_fine_E[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_E[:, it])(lnk_fine)
     print(f"Interpolated sources: {nk} → {nk_fine} k-modes")
 
     # --- Line-of-sight integration with precomputed Bessel tables ---
