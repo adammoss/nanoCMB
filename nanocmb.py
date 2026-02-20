@@ -1001,7 +1001,7 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
-def build_tau_out(thermo, tau0, lo=-80.0, hi=320.0, n_early=50, n_rec=1000, n_late=100, n_re=80):
+def build_tau_out(thermo, tau0, lo=-100.0, hi=360.0, n_early=55, n_rec=1050, n_late=150, n_re=100):
     """Build the piecewise conformal-time grid used for source output.
 
     Dense sampling around recombination (tau_star) captures the narrow
@@ -1021,13 +1021,12 @@ def build_tau_out(thermo, tau0, lo=-80.0, hi=320.0, n_early=50, n_rec=1000, n_la
     tau_re_lo = np.interp(z_re_lo, z_rev, tau_rev)
     tau_re_hi = np.interp(z_re_hi, z_rev, tau_rev)
     tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), n_re)
-
     tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
     tau_out = tau_out[(tau_out > 0.1) & (tau_out < tau0 - 1)]
     return tau_out
 
 
-def build_k_arr(k_min=0.5e-4, k_max=0.45, n_low=24, n_mid=180, n_mid_hi=70, n_high=50):
+def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
     """Build the ODE k-grid for perturbation/source evolution.
 
     The ODE grid only resolves acoustic structure in source functions
@@ -1089,10 +1088,10 @@ def compute_cls(bg, thermo, params):
     # Source functions are smooth in k, but the transfer function Δ_ℓ(k)
     # oscillates rapidly due to Bessel function ringing. A fine k-grid is
     # needed for accurate ∫|Δ|² d(ln k) integration .
-    nk_fine = 3000
-    # Start dense linear spacing at k=0.002 (covers ℓ>30 peak contributions)
-    k_lin_start = 0.002
-    n_log = 40
+    nk_fine = 4000
+    # Start dense linear spacing at k=0.002 (covers low-ℓ peak contributions)
+    k_lin_start = max(0.002, k_arr[0])
+    n_log = 80
     k_fine = np.unique(np.concatenate([
         np.logspace(np.log10(k_arr[0]), np.log10(k_lin_start), n_log),
         np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log),
@@ -1115,10 +1114,8 @@ def compute_cls(bg, thermo, params):
     print("Computing transfer functions (line-of-sight integration)...")
     ell_max = params['ell_max']
     ells_compute = np.unique(np.concatenate([
-        np.arange(2, 16, 1),
-        np.arange(17, 39, 2),
-        np.arange(40, 95, 5),
-        np.array([110, 130, 150, 175, 200]),
+        np.arange(2, 40, 2),
+        np.arange(40, 200, 5),
         np.arange(200, ell_max + 1, 50),
     ]))
     ells_compute = ells_compute[ells_compute <= ell_max]
@@ -1138,7 +1135,7 @@ def compute_cls(bg, thermo, params):
 
     # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
-        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.15
+        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.1
     )
 
     def _compute_ell_transfer(il, ell):

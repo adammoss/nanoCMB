@@ -148,10 +148,10 @@ try:
     residual = DlTE_nano[mask_pos] / TE_camb_interp[mask_pos] - 1
     ax_bot.plot(ells_nano[mask_pos], residual * 100, 'g-', alpha=0.6, lw=0.8)
     ax_bot.axhline(0, color='k', ls='--', lw=0.5)
-    ax_bot.axhspan(-2, 2, alpha=0.1, color='blue', label=r'$\pm$2%')
+    ax_bot.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
     ax_bot.set_xlabel(r'Multipole $\ell$')
     ax_bot.set_ylabel('Residual [%]')
-    ax_bot.set_ylim(-10, 10)
+    ax_bot.set_ylim(-3, 3)
     ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
     fig.savefig('plots/te_spectrum.png', dpi=150)
