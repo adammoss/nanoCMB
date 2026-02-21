@@ -976,9 +976,21 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 
 # ============================================================
 # OPTIMAL GRID CONSTRUCTION
-# Equidistribution-based optimal k and tau grids for CMB computation.
-# Density ~ |I''|^(1/3) for trapezoidal rule error equidistribution.
-# Grid functions take bg/thermo/params dicts from the pipeline above.
+#
+# Place grid nodes to minimise the global error of composite trapezoidal
+# quadrature.  For an integral I = ∫ f(x) dx approximated on N panels,
+# the local truncation error is proportional to h³|f''|, where h is the
+# panel width.  Minimising the total error ∑ h³|f''| subject to ∑ h = L
+# (Lagrange multiplier / equidistribution argument) gives the optimal
+# node density:
+#
+#     n(x) ∝ |f''(x)|^(1/3)
+#
+# We model |f''| via analytic weight functions that capture the dominant
+# structure: acoustic oscillations (period π/r_s), Silk damping (scale
+# k_D), Bessel oscillations (j_ℓ), and the visibility function peak.
+# The weight is evaluated on a fine grid, raised to the 1/3 power, and
+# the CDF is inverted to place N nodes — no iterative optimisation needed.
 # ============================================================
 
 
@@ -1045,11 +1057,10 @@ def optimal_k_grid(N, mode, bg, thermo, params,
     return k_grid
 
 
-def _los_weight(tau, bg, thermo, k_max, isw_weight):
+def _los_weight(tau, bg, thermo, k_max):
     """Curvature model for the LOS integrand in tau."""
     tau_star = thermo['tau_star']
     delta_tau_rec = thermo['delta_tau_rec']
-    tau_0 = bg['tau0']
 
     # Recombination: visibility peak + acoustic source structure
     g_rec = np.exp(-0.5 * ((tau - tau_star) / delta_tau_rec) ** 2)
@@ -1060,27 +1071,17 @@ def _los_weight(tau, bg, thermo, k_max, isw_weight):
     g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
     reion = g_reion / thermo['delta_tau_reion'] ** 2
 
-    # Late-time ISW
-    tau_de = 0.85 * tau_0
-    sigma_de = 0.25 * tau_0
-    isw_source = np.where(
-        tau > tau_star + 3 * delta_tau_rec,
-        np.exp(-0.5 * ((tau - tau_de) / sigma_de) ** 2), 0.0)
-    k_eff_sq = k_max**2 / (1.0 + (k_max * 2000.0)**2)
-    isw_curv = isw_source * k_eff_sq
-    isw_curv *= 0.3 / (delta_tau_rec**2 * (np.max(isw_curv) + 1e-30))
-
-    return recomb + 0.3 * reion + isw_weight * isw_curv
+    return recomb + 0.3 * reion
 
 
 def optimal_tau_grid(N, k_max, bg, thermo,
-                     isw_weight=0.3, tau_min=1.0, tau_max=None, n_eval=10000):
+                     tau_min=1.0, tau_max=None, n_eval=10000):
     """Compute an optimal non-uniform tau grid for the LOS integral."""
     if tau_max is None:
         tau_max = bg['tau0']
 
     tau = np.linspace(tau_min, tau_max, n_eval)
-    weight_raw = _los_weight(tau, bg, thermo, k_max, isw_weight)
+    weight_raw = _los_weight(tau, bg, thermo, k_max)
 
     density = (weight_raw + 0.002 * np.max(weight_raw)) ** (1.0 / 3.0)
     dtau = tau[1] - tau[0]
@@ -1403,10 +1404,16 @@ def main():
     print(f"τ_reion = {thermo['tau_reion']:.2f} Mpc")
     print(f"δτ_reion = {thermo['delta_tau_reion']:.2f} Mpc")
 
-    tau0 = bg['tau0']
-
     # Compute CMB angular power spectra
+    print(f"\nUsing optimal grids (nk_ode={args.nk_ode}, "
+          f"nk_fine={args.nk_fine}, ntau={args.ntau})")
     print("\n=== Computing Power Spectra ===")
+    k_arr = optimal_k_grid(N=args.nk_ode, mode="ode", bg=bg, thermo=thermo, params=params)
+    k_fine = optimal_k_grid(N=args.nk_fine, mode="cl", bg=bg, thermo=thermo, params=params,
+                            k_min=k_arr[0], k_max=k_arr[-1])
+    tau0 = bg['tau0']
+    tau_out = optimal_tau_grid(N=args.ntau, k_max=k_arr[-1], bg=bg, thermo=thermo,
+                               tau_min=1.0, tau_max=tau0 - 1)
     result = compute_cls(bg, thermo, params, k_arr=k_arr, k_fine=k_fine, tau_out=tau_out)
 
     # Print peak values as sanity check
