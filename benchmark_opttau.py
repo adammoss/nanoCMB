@@ -4,8 +4,32 @@ import numpy as np
 import time
 
 from nanocmb import (compute_background, compute_thermodynamics, compute_cls,
-                     build_k_arr, build_tau_out, params,
-                     optimal_tau_grid, cosmo_params_from_nanocmb)
+                     params, optimal_tau_grid)
+
+
+def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
+    """Hand-tuned ODE k-grid (legacy reference)."""
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), n_low)
+    k_mid = np.linspace(0.008, 0.18, n_mid)
+    k_mid_hi = np.linspace(0.18, 0.30, n_mid_hi)
+    k_high = np.linspace(0.30, k_max, n_high)
+    return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
+
+
+def build_tau_out(thermo, tau0):
+    """Hand-tuned conformal-time grid (legacy reference)."""
+    tau_star = thermo['tau_star']
+    tau_early = np.linspace(1.0, tau_star - 100, 55)
+    tau_rec = np.linspace(tau_star - 100, tau_star + 360, 1050)
+    tau_late = np.linspace(tau_star + 360, tau0 - 10, 150)
+    z_rev = thermo['z_arr'][::-1]
+    tau_rev = thermo['tau_arr'][::-1]
+    z_re = thermo['z_reion']
+    tau_re_lo = np.interp(max(0.01, z_re - 6.0), z_rev, tau_rev)
+    tau_re_hi = np.interp(z_re + 6.0, z_rev, tau_rev)
+    tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), 100)
+    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
+    return tau_out[(tau_out > 0.1) & (tau_out < tau0 - 1)]
 
 
 def run(bg, thermo, camb_data, tau_out=None, label=""):
@@ -77,7 +101,6 @@ def main():
     tau_default = build_tau_out(thermo, bg['tau0'])
     k_default = build_k_arr()
     N_default = len(tau_default)
-    cosmo = cosmo_params_from_nanocmb(bg, thermo, params)
 
     all_results = []
 
@@ -93,9 +116,8 @@ def main():
     print("=" * 60)
     print(f"Optimal tau (N={N_default})")
     print("=" * 60)
-    tau_opt = optimal_tau_grid(N=N_default, k_max=k_default[-1],
-                              tau_min=tau_default[0], tau_max=tau_default[-1],
-                              cosmo=cosmo)
+    tau_opt = optimal_tau_grid(N=N_default, k_max=k_default[-1], bg=bg, thermo=thermo,
+                              tau_min=tau_default[0], tau_max=tau_default[-1])
     s = run(bg, thermo, camb_data, tau_out=tau_opt,
             label=f"optimal tau N={N_default}")
     all_results.append(s)
@@ -106,9 +128,8 @@ def main():
         print("=" * 60)
         print(f"Optimal tau (N={N})")
         print("=" * 60)
-        tau_opt = optimal_tau_grid(N=N, k_max=k_default[-1],
-                                  tau_min=tau_default[0], tau_max=tau_default[-1],
-                                  cosmo=cosmo)
+        tau_opt = optimal_tau_grid(N=N, k_max=k_default[-1], bg=bg, thermo=thermo,
+                                  tau_min=tau_default[0], tau_max=tau_default[-1])
         s = run(bg, thermo, camb_data, tau_out=tau_opt,
                 label=f"optimal tau N={N}")
         all_results.append(s)

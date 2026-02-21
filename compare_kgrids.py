@@ -10,10 +10,44 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from nanocmb import build_k_arr, optimal_k_grid, diagnose_grid
+from nanocmb import (optimal_k_grid,
+                     compute_background, compute_thermodynamics, params)
 
-r_s = 145.0
-acoustic_period = np.pi / r_s
+
+def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
+    """Hand-tuned ODE k-grid (legacy reference)."""
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), n_low)
+    k_mid = np.linspace(0.008, 0.18, n_mid)
+    k_mid_hi = np.linspace(0.18, 0.30, n_mid_hi)
+    k_high = np.linspace(0.30, k_max, n_high)
+    return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
+
+
+def diagnose_grid(k_grid, bg, thermo, label=""):
+    """Print diagnostic information about a k-grid."""
+    N = len(k_grid)
+    dk = np.diff(k_grid)
+    dlnk = np.diff(np.log(k_grid))
+    chi_star = bg['tau0'] - thermo['tau_star']
+
+    print(f"=== {label + ' ' if label else ''}(N = {N}) ===")
+    print(f"  k range: [{k_grid[0]:.2e}, {k_grid[-1]:.2e}] 1/Mpc")
+    print(f"  dk  — min: {dk.min():.2e}, max: {dk.max():.2e}, "
+          f"ratio: {dk.max()/dk.min():.1f}")
+    print(f"  dlnk — min: {dlnk.min():.4f}, max: {dlnk.max():.4f}, "
+          f"ratio: {dlnk.max()/dlnk.min():.1f}")
+
+    k_acoustic = k_grid[(k_grid > 0.01) & (k_grid < 0.2)]
+    if len(k_acoustic) > 1:
+        pts = (np.pi / thermo['r_s']) / np.median(np.diff(k_acoustic))
+        print(f"  Points per acoustic oscillation (0.01–0.2): {pts:.1f}")
+
+    for lbl, k_t in [("Horizon (ell~2)", 2.0 / chi_star),
+                      ("First peak (ell~220)", 220.0 / chi_star),
+                      ("Damping (k_D)", thermo['k_D'])]:
+        idx = np.argmin(np.abs(k_grid - k_t))
+        print(f"  At {lbl} (k={k_t:.4f}): local dk = {dk[min(idx, len(dk)-1)]:.2e}")
+    print()
 
 
 def clean_grid(k_arr):
@@ -77,7 +111,7 @@ def plot_comparison(k_hand, k_opt, label_hand, label_opt, title, savename):
                 label=label_hand, alpha=0.8)
     ax.semilogy(k_opt[:-1], np.diff(k_opt), color="C0",
                 label=label_opt, alpha=0.8)
-    ax.axhline(acoustic_period, color="grey", ls="--", alpha=0.5,
+    ax.axhline(np.pi / 145.0, color="grey", ls="--", alpha=0.5,
                label=r"$\pi/r_s$")
     ax.set_xlabel(r"$k\,[\mathrm{Mpc}^{-1}]$")
     ax.set_ylabel(r"$\Delta k\,[\mathrm{Mpc}^{-1}]$")
@@ -116,6 +150,12 @@ def plot_comparison(k_hand, k_opt, label_hand, label_opt, title, savename):
 
 
 # ==================================================================
+# Setup
+# ==================================================================
+bg = compute_background(params)
+thermo = compute_thermodynamics(bg, params)
+
+# ==================================================================
 # 1. ODE grid comparison
 # ==================================================================
 print("=" * 60)
@@ -124,11 +164,11 @@ print("=" * 60)
 
 k_hand_ode = clean_grid(build_k_arr())
 N_ode = len(k_hand_ode)
-k_opt_ode = optimal_k_grid(N=N_ode, mode="ode",
+k_opt_ode = optimal_k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
                            k_min=k_hand_ode[0], k_max=k_hand_ode[-1])
 
-diagnose_grid(k_hand_ode, label="build_k_arr (hand-tuned)")
-diagnose_grid(k_opt_ode, label="optimal_k_grid (ODE mode)")
+diagnose_grid(k_hand_ode, bg, thermo, label="build_k_arr (hand-tuned)")
+diagnose_grid(k_opt_ode, bg, thermo, label="optimal_k_grid (ODE mode)")
 
 plot_comparison(
     k_hand_ode, k_opt_ode,
@@ -146,11 +186,11 @@ print("=" * 60)
 
 k_hand_fine = clean_grid(build_k_fine(build_k_arr()))
 N_fine = len(k_hand_fine)
-k_opt_fine = optimal_k_grid(N=N_fine, mode="cl",
+k_opt_fine = optimal_k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
                             k_min=k_hand_fine[0], k_max=k_hand_fine[-1])
 
-diagnose_grid(k_hand_fine, label="k_fine (hand-tuned)")
-diagnose_grid(k_opt_fine, label="optimal_k_grid (CL mode)")
+diagnose_grid(k_hand_fine, bg, thermo, label="k_fine (hand-tuned)")
+diagnose_grid(k_opt_fine, bg, thermo, label="optimal_k_grid (CL mode)")
 
 plot_comparison(
     k_hand_fine, k_opt_fine,

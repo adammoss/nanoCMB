@@ -9,7 +9,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 
-from nanocmb import compute_background, compute_thermodynamics, compute_cls, build_k_arr, params, optimal_k_grid
+from nanocmb import compute_background, compute_thermodynamics, compute_cls, params, optimal_k_grid
+
+
+def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
+    """Hand-tuned ODE k-grid (legacy reference)."""
+    k_low = np.logspace(np.log10(k_min), np.log10(0.008), n_low)
+    k_mid = np.linspace(0.008, 0.18, n_mid)
+    k_mid_hi = np.linspace(0.18, 0.30, n_mid_hi)
+    k_high = np.linspace(0.30, k_max, n_high)
+    return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
 
 
 def main():
@@ -28,7 +37,7 @@ def main():
 
     # --- Run with optimal ODE grid (same N, same k range) ---
     k_hand = build_k_arr()
-    k_opt = optimal_k_grid(N=len(k_hand), mode="ode",
+    k_opt = optimal_k_grid(N=len(k_hand), mode="ode", bg=bg, thermo=thermo, params=params,
                            k_min=k_hand[0], k_max=k_hand[-1])
 
     print("\n" + "=" * 60)
