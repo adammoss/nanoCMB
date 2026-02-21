@@ -5,9 +5,8 @@ import time
 from nanocmb import (compute_background, compute_thermodynamics, params,
                      build_k_arr, build_tau_out, setup_perturbation_grid,
                      evolve_k, _pool_init, _pool_solve_k, _boltzmann_rhs,
-                     NVAR)
+                     NVAR, optimal_k_grid)
 from scipy import interpolate
-from optk import optimal_k_grid
 
 
 def time_pipeline(bg, thermo, k_arr, label=""):

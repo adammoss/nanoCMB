@@ -10,8 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from nanocmb import (compute_background, compute_thermodynamics, compute_cls,
-                     build_k_arr, params)
-from optk import optimal_k_grid
+                     build_k_arr, params, optimal_k_grid)
 
 
 def run_and_validate(bg, thermo, camb_data, k_arr=None, k_fine=None, label=""):

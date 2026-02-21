@@ -4,9 +4,8 @@ import numpy as np
 import time
 
 from nanocmb import (compute_background, compute_thermodynamics, compute_cls,
-                     build_k_arr, build_tau_out, params)
-from opttau import optimal_tau_grid
-from optk import cosmo_params_from_nanocmb
+                     build_k_arr, build_tau_out, params,
+                     optimal_tau_grid, cosmo_params_from_nanocmb)
 
 
 def run(bg, thermo, camb_data, tau_out=None, label=""):

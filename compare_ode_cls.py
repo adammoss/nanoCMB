@@ -9,8 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 
-from nanocmb import compute_background, compute_thermodynamics, compute_cls, build_k_arr, params
-from optk import optimal_k_grid
+from nanocmb import compute_background, compute_thermodynamics, compute_cls, build_k_arr, params, optimal_k_grid
 
 
 def main():

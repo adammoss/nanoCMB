@@ -5,8 +5,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from nanocmb import compute_background, compute_thermodynamics, build_tau_out, params
-from opttau import optimal_tau_grid, diagnose_tau_grid, CosmoParams
+from nanocmb import (compute_background, compute_thermodynamics, build_tau_out, params,
+                     optimal_tau_grid, diagnose_tau_grid, CosmoParams)
 
 
 def node_density(grid):

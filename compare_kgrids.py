@@ -10,8 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from nanocmb import build_k_arr
-from optk import optimal_k_grid, diagnose_grid
+from nanocmb import build_k_arr, optimal_k_grid, diagnose_grid
 
 r_s = 145.0
 acoustic_period = np.pi / r_s
