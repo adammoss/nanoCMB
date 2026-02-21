@@ -1057,23 +1057,6 @@ def optimal_k_grid(N, mode, bg, thermo, params,
     return k_grid
 
 
-def _los_weight(tau, bg, thermo, k_max):
-    """Curvature model for the LOS integrand in tau."""
-    tau_star = thermo['tau_star']
-    delta_tau_rec = thermo['delta_tau_rec']
-
-    # Recombination: visibility peak + acoustic source structure
-    g_rec = np.exp(-0.5 * ((tau - tau_star) / delta_tau_rec) ** 2)
-    g_broad = np.exp(-0.5 * ((tau - tau_star) / thermo['r_s']) ** 2)
-    recomb = g_rec / delta_tau_rec**2 + g_broad * (k_max / np.sqrt(3.0))**2
-
-    # Reionization
-    g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
-    reion = g_reion / thermo['delta_tau_reion'] ** 2
-
-    return recomb + 0.3 * reion
-
-
 def optimal_tau_grid(N, k_max, bg, thermo,
                      tau_min=1.0, tau_max=None, n_eval=10000):
     """Compute an optimal non-uniform tau grid for the LOS integral."""
@@ -1081,9 +1064,19 @@ def optimal_tau_grid(N, k_max, bg, thermo,
         tau_max = bg['tau0']
 
     tau = np.linspace(tau_min, tau_max, n_eval)
-    weight_raw = _los_weight(tau, bg, thermo, k_max)
+    tau_star = thermo['tau_star']
+    delta_tau_rec = thermo['delta_tau_rec']
 
-    density = (weight_raw + 0.002 * np.max(weight_raw)) ** (1.0 / 3.0)
+    # Recombination: visibility peak + acoustic source structure
+    g_rec = np.exp(-0.5 * ((tau - tau_star) / delta_tau_rec) ** 2)
+    g_broad = np.exp(-0.5 * ((tau - tau_star) / thermo['r_s']) ** 2)
+    weight = g_rec / delta_tau_rec**2 + g_broad * (k_max / np.sqrt(3.0))**2
+
+    # Reionization
+    g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
+    weight += 0.3 * g_reion / thermo['delta_tau_reion'] ** 2
+
+    density = (weight + 0.002 * np.max(weight)) ** (1.0 / 3.0)
     dtau = tau[1] - tau[0]
     cdf = np.cumsum(density) * dtau
     cdf -= cdf[0]
