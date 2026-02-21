@@ -1372,11 +1372,11 @@ def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="nanoCMB — minimal CMB power spectrum calculator")
-    parser.add_argument('--nk-ode', type=int, default=340,
+    parser.add_argument('--nk-ode', type=int, default=400,
                         help="Number of ODE k-modes (default: 340)")
     parser.add_argument('--nk-fine', type=int, default=4000,
                         help="Number of fine k-modes (default: 4000)")
-    parser.add_argument('--ntau', type=int, default=1350,
+    parser.add_argument('--ntau', type=int, default=2000,
                         help="Number of tau points (default: 1350)")
     args = parser.parse_args()
 
