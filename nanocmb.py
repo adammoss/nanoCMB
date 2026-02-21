@@ -976,21 +976,6 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 
 # ============================================================
 # OPTIMAL GRID CONSTRUCTION
-#
-# Place grid nodes to minimise the global error of composite trapezoidal
-# quadrature.  For an integral I = ∫ f(x) dx approximated on N panels,
-# the local truncation error is proportional to h³|f''|, where h is the
-# panel width.  Minimising the total error ∑ h³|f''| subject to ∑ h = L
-# (Lagrange multiplier / equidistribution argument) gives the optimal
-# node density:
-#
-#     n(x) ∝ |f''(x)|^(1/3)
-#
-# We model |f''| via analytic weight functions that capture the dominant
-# structure: acoustic oscillations (period π/r_s), Silk damping (scale
-# k_D), Bessel oscillations (j_ℓ), and the visibility function peak.
-# The weight is evaluated on a fine grid, raised to the 1/3 power, and
-# the CDF is inverted to place N nodes — no iterative optimisation needed.
 # ============================================================
 
 
