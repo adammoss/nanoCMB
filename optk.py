@@ -29,11 +29,12 @@ class GridMode(str, Enum):
 
 @dataclass
 class CosmoParams:
-    """Standard cosmological parameters relevant to k-grid placement.
+    """Cosmological parameters for optimal grid placement.
 
     Default values are Planck 2018 best-fit LCDM.
-    All distances in comoving Mpc.
+    All distances/times in comoving Mpc (c = 1).
     """
+    # k-grid parameters
     chi_star: float = 14000.0       # comoving distance to last scattering
     delta_chi: float = 40.0         # width of visibility function
     r_s: float = 145.0              # sound horizon at recombination
@@ -42,6 +43,107 @@ class CosmoParams:
     chi_reion: float = 4500.0       # distance to reionization midpoint
     delta_chi_reion: float = 800.0  # width of reionization visibility
     chi_eq: float = 100.0           # comoving horizon at matter-radiation equality
+    # tau-grid parameters
+    tau_0: float = 14000.0          # conformal time today
+    tau_star: float = 280.0         # conformal time at recombination
+    delta_tau_rec: float = 40.0     # width of visibility function in tau
+    tau_reion: float = 9500.0       # conformal time at reionization midpoint
+    delta_tau_reion: float = 800.0  # width of reionization in tau
+    tau_eq: float = 120.0           # conformal time at matter-radiation equality
+
+
+def cosmo_params_from_nanocmb(bg, thermo, params):
+    """Extract CosmoParams from nanocmb bg/thermo dictionaries.
+
+    Computes all derived quantities (sound horizon, damping scale, etc.)
+    from the actual cosmology rather than using hardcoded defaults.
+    """
+    from scipy import integrate as sci_integrate
+
+    tau_0 = bg['tau0']
+    tau_star = thermo['tau_star']
+    z_star = thermo['z_star']
+    a_star = 1.0 / (1.0 + z_star)
+    chi_star = tau_0 - tau_star
+
+    # Sound horizon: r_s = int_0^{a_*} c_s / (a^2 H) da
+    a_grid = np.linspace(1e-8, a_star, 5000)
+    R = 0.75 * bg['grhob'] * a_grid / bg['grhog']
+    c_s = 1.0 / np.sqrt(3.0 * (1.0 + R))
+    grhoa2 = (bg['grhog'] + bg['grhornomass']
+              + (bg['grhoc'] + bg['grhob']) * a_grid
+              + bg['grhov'] * a_grid**4)
+    dtauda = np.sqrt(3.0 / grhoa2)
+    r_s = np.trapezoid(c_s * dtauda, a_grid)
+
+    # Silk damping scale: 1/k_D^2 = int_0^{a_*} (R^2 + 16(1+R)/15) / (6(1+R)^2 kappa_dot) dtau/da da
+    # kappa_dot = x_e * akthom / a^2
+    xe_interp = np.interp(a_grid, thermo['a_arr'], thermo['xe'])
+    kappa_dot = xe_interp * bg['akthom'] / a_grid**2
+    kappa_dot = np.maximum(kappa_dot, 1e-30)
+    integrand_D = (R**2 + 16.0 * (1.0 + R) / 15.0) / (6.0 * (1.0 + R)**2 * kappa_dot) * dtauda
+    k_D_inv_sq = np.trapezoid(integrand_D, a_grid)
+    k_D = 1.0 / np.sqrt(k_D_inv_sq)
+
+    # Visibility function width (Gaussian sigma from FWHM)
+    vis = thermo['visibility']
+    tau_arr = thermo['tau_arr']
+    peak_idx = np.argmax(vis)
+    half_max = vis[peak_idx] / 2.0
+    # Find half-max on left side
+    left_vis = vis[:peak_idx + 1]
+    left_tau = tau_arr[:peak_idx + 1]
+    idx_left = np.searchsorted(left_vis, half_max)
+    idx_left = max(1, min(idx_left, len(left_vis) - 1))
+    tau_left = np.interp(half_max, left_vis[idx_left-1:idx_left+1],
+                         left_tau[idx_left-1:idx_left+1])
+    # Find half-max on right side
+    right_vis = vis[peak_idx:][::-1]
+    right_tau = tau_arr[peak_idx:][::-1]
+    idx_right = np.searchsorted(right_vis, half_max)
+    idx_right = max(1, min(idx_right, len(right_vis) - 1))
+    tau_right = np.interp(half_max, right_vis[idx_right-1:idx_right+1],
+                          right_tau[idx_right-1:idx_right+1])
+    fwhm = tau_right - tau_left
+    delta_tau_rec = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    delta_chi = delta_tau_rec
+
+    # Reionization: convert z_reion to tau
+    z_re = thermo['z_reion']
+    tau_reion = np.interp(z_re, thermo['z_arr'][::-1], thermo['tau_arr'][::-1])
+    chi_reion = tau_0 - tau_reion
+    # Reionization width from params (delta_z ~ 0.5 default)
+    delta_z = params.get('delta_z_reion', 0.5)
+    z_re_lo = max(0.01, z_re - 6 * delta_z)
+    z_re_hi = z_re + 6 * delta_z
+    tau_re_lo = np.interp(z_re_lo, thermo['z_arr'][::-1], thermo['tau_arr'][::-1])
+    tau_re_hi = np.interp(z_re_hi, thermo['z_arr'][::-1], thermo['tau_arr'][::-1])
+    delta_tau_reion = abs(tau_re_hi - tau_re_lo) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    delta_chi_reion = delta_tau_reion
+
+    # Matter-radiation equality
+    # chi_eq is the particle horizon at equality = tau_eq (comoving horizon size)
+    a_eq = (bg['grhog'] + bg['grhornomass']) / (bg['grhoc'] + bg['grhob'])
+    z_eq = 1.0 / a_eq - 1.0
+    tau_eq = np.interp(z_eq, thermo['z_arr'][::-1], thermo['tau_arr'][::-1])
+    chi_eq = tau_eq
+
+    return CosmoParams(
+        chi_star=chi_star,
+        delta_chi=delta_chi,
+        r_s=r_s,
+        k_D=k_D,
+        n_s=params['n_s'],
+        chi_reion=chi_reion,
+        delta_chi_reion=delta_chi_reion,
+        chi_eq=chi_eq,
+        tau_0=tau_0,
+        tau_star=tau_star,
+        delta_tau_rec=delta_tau_rec,
+        tau_reion=tau_reion,
+        delta_tau_reion=delta_tau_reion,
+        tau_eq=tau_eq,
+    )
 
 
 def _weight_cl(
@@ -75,7 +177,7 @@ def _weight_cl(
         # Curvature from acoustic oscillations vs smooth envelope
         acoustic_curv = (1.0 / cosmo.r_s) ** 2 * envelope
         smooth_curv = sigma_k ** 2 * envelope
-        recomb = np.maximum(acoustic_curv, smooth_curv) * primordial * damping
+        recomb = np.maximum(acoustic_curv, smooth_curv) * primordial * np.maximum(damping, 0.02)
 
         # ISW at low ell
         if ell < 100:

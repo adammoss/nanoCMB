@@ -961,8 +961,35 @@ def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
 
+_bessel_cache = {}
+
+
 def _build_bessel_tables(ells_compute, x_max, dx):
-    """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation."""
+    """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation.
+
+    Results are cached in memory keyed by (ells, x_max, dx). The cache is
+    also persisted to disk so that subsequent runs skip the expensive
+    scipy.special.jv evaluation entirely.
+    """
+    # Cache key: ells tuple + grid parameters
+    cache_key = (tuple(ells_compute.astype(int)), round(x_max, 2), dx)
+    if cache_key in _bessel_cache:
+        return _bessel_cache[cache_key]
+
+    # Try loading from disk
+    import hashlib, os
+    key_str = f"{list(cache_key[0])}_{cache_key[1]}_{cache_key[2]}"
+    cache_hash = hashlib.md5(key_str.encode()).hexdigest()[:12]
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
+    cache_file = os.path.join(cache_dir, f'bessel_{cache_hash}.npz')
+
+    if os.path.exists(cache_file):
+        data = np.load(cache_file)
+        result = (float(data['x0']), float(data['inv_dx']),
+                  int(data['n_x']), data['jl_tab'], data['jl1_tab'])
+        _bessel_cache[cache_key] = result
+        return result
+
     n_x = int(np.ceil(x_max / dx)) + 2
     x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
     x_safe = np.where(x_tab > 1e-30, x_tab, 1.0)
@@ -979,16 +1006,30 @@ def _build_bessel_tables(ells_compute, x_max, dx):
 
     for iu, ell in enumerate(l_unique):
         nu = ell + 0.5
-        jl = pref * special.jv(nu, x_tab)
+        # j_ell(x) is exponentially small for x < ell - O(ell^{1/3}).
+        # Skip the dead zone to avoid wasting time on zeros.
+        x_min = max(0.0, ell - 4.0 * ell**(1.0/3.0))
+        i_start = max(0, int(x_min / dx) - 1)
+        jl = np.zeros(n_x)
+        jl[i_start:] = pref[i_start:] * special.jv(nu, x_tab[i_start:])
         # Correct small-x limits for stability of interpolation near origin.
-        jl[0] = 1.0 if ell == 0 else 0.0
+        if i_start == 0:
+            jl[0] = 1.0 if ell == 0 else 0.0
         j_unique[iu, :] = jl
 
     for i, ell in enumerate(ells_compute):
         jl_tab[i, :] = j_unique[l_to_idx[int(ell)], :]
         jl1_tab[i, :] = j_unique[l_to_idx[int(ell + 1)], :]
 
-    return x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab
+    result = (x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab)
+    _bessel_cache[cache_key] = result
+
+    # Persist to disk
+    os.makedirs(cache_dir, exist_ok=True)
+    np.savez(cache_file, x0=x_tab[0], inv_dx=1.0/dx, n_x=n_x,
+             jl_tab=jl_tab, jl1_tab=jl1_tab)
+
+    return result
 
 
 def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
@@ -1040,7 +1081,7 @@ def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_hi
     return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
 
 
-def compute_cls(bg, thermo, params, k_arr=None):
+def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
@@ -1053,7 +1094,8 @@ def compute_cls(bg, thermo, params, k_arr=None):
 
     # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
-    tau_out = build_tau_out(thermo, tau0)
+    if tau_out is None:
+        tau_out = build_tau_out(thermo, tau0)
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
 
@@ -1089,14 +1131,15 @@ def compute_cls(bg, thermo, params, k_arr=None):
     # Source functions are smooth in k, but the transfer function Δ_ℓ(k)
     # oscillates rapidly due to Bessel function ringing. A fine k-grid is
     # needed for accurate ∫|Δ|² d(ln k) integration .
-    nk_fine = 4000
-    # Start dense linear spacing at k=0.002 (covers low-ℓ peak contributions)
-    k_lin_start = max(0.002, k_arr[0])
-    n_log = 80
-    k_fine = np.unique(np.concatenate([
-        np.logspace(np.log10(k_arr[0]), np.log10(k_lin_start), n_log),
-        np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log),
-    ]))
+    if k_fine is None:
+        nk_fine = 4000
+        # Start dense linear spacing at k=0.002 (covers low-ℓ peak contributions)
+        k_lin_start = max(0.002, k_arr[0])
+        n_log = 80
+        k_fine = np.unique(np.concatenate([
+            np.logspace(np.log10(k_arr[0]), np.log10(k_lin_start), n_log),
+            np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log),
+        ]))
     nk_fine = len(k_fine)
     lnk_ode = np.log(k_arr)
     lnk_fine = np.log(k_fine)
@@ -1136,7 +1179,7 @@ def compute_cls(bg, thermo, params, k_arr=None):
 
     # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
-        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.1
+        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.03
     )
 
     def _compute_ell_transfer(il, ell):
@@ -1227,9 +1270,17 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="nanoCMB — minimal CMB power spectrum calculator")
     parser.add_argument('--optk', action='store_true',
-                        help="Use optimal k-grid from optk.py instead of hand-tuned build_k_arr")
+                        help="Use optimal ODE k-grid from optk.py")
     parser.add_argument('--optk-n', type=int, default=None,
-                        help="Number of k-modes for optimal grid (default: match build_k_arr)")
+                        help="Number of k-modes for optimal ODE grid (default: match build_k_arr)")
+    parser.add_argument('--optk-fine', action='store_true',
+                        help="Use optimal fine k-grid (C_ell mode) from optk.py")
+    parser.add_argument('--optk-fine-n', type=int, default=None,
+                        help="Number of fine k-modes for optimal grid (default: 4000)")
+    parser.add_argument('--opttau', action='store_true',
+                        help="Use optimal tau grid from opttau.py")
+    parser.add_argument('--opttau-n', type=int, default=None,
+                        help="Number of tau points for optimal grid (default: match build_tau_out)")
     args = parser.parse_args()
 
     bg = compute_background(params)
@@ -1243,19 +1294,47 @@ def main():
     print(f"η* = {thermo['tau_star']:.2f} Mpc")
     print(f"z_reion = {thermo['z_reion']:.2f}")
 
-    # Build k-grid
+    # Build k-grids
     k_arr = None
-    if args.optk:
+    k_fine = None
+    k_default = build_k_arr()
+
+    # Compute derived cosmological parameters for optimal grids
+    cosmo = None
+    if args.optk or args.optk_fine or args.opttau:
+        from optk import cosmo_params_from_nanocmb
+        cosmo = cosmo_params_from_nanocmb(bg, thermo, params)
+
+    if args.optk or args.optk_fine:
         from optk import optimal_k_grid
-        k_default = build_k_arr()
+
+    if args.optk:
         N = args.optk_n if args.optk_n is not None else len(k_default)
         k_arr = optimal_k_grid(N=N, mode="ode",
-                               k_min=k_default[0], k_max=k_default[-1])
-        print(f"\nUsing optimal k-grid (N={N})")
+                               k_min=k_default[0], k_max=k_default[-1],
+                               cosmo=cosmo)
+        print(f"\nUsing optimal ODE k-grid (N={N})")
+
+    if args.optk_fine:
+        N_fine = args.optk_fine_n if args.optk_fine_n is not None else 4000
+        k_fine = optimal_k_grid(N=N_fine, mode="cl",
+                                k_min=k_default[0], k_max=k_default[-1],
+                                cosmo=cosmo)
+        print(f"Using optimal fine k-grid (N={N_fine})")
+
+    tau_out = None
+    if args.opttau:
+        from opttau import optimal_tau_grid
+        tau_default = build_tau_out(thermo, bg['tau0'])
+        N_tau = args.opttau_n if args.opttau_n is not None else len(tau_default)
+        tau_out = optimal_tau_grid(N=N_tau, k_max=k_default[-1],
+                                  tau_min=tau_default[0], tau_max=tau_default[-1],
+                                  cosmo=cosmo)
+        print(f"Using optimal tau grid (N={N_tau})")
 
     # Compute CMB angular power spectra
     print("\n=== Computing Power Spectra ===")
-    result = compute_cls(bg, thermo, params, k_arr=k_arr)
+    result = compute_cls(bg, thermo, params, k_arr=k_arr, k_fine=k_fine, tau_out=tau_out)
 
     # Print peak values as sanity check
     ells = result['ells']
