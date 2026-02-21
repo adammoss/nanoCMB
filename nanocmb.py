@@ -1040,7 +1040,7 @@ def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_hi
     return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
 
 
-def compute_cls(bg, thermo, params):
+def compute_cls(bg, thermo, params, k_arr=None):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
@@ -1058,7 +1058,8 @@ def compute_cls(bg, thermo, params):
     print(f"  {ntau} output time steps")
 
     # --- k-sampling ---
-    k_arr = build_k_arr()
+    if k_arr is None:
+        k_arr = build_k_arr()
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
 
@@ -1223,6 +1224,14 @@ def compute_cls(bg, thermo, params):
 # ============================================================
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="nanoCMB — minimal CMB power spectrum calculator")
+    parser.add_argument('--optk', action='store_true',
+                        help="Use optimal k-grid from optk.py instead of hand-tuned build_k_arr")
+    parser.add_argument('--optk-n', type=int, default=None,
+                        help="Number of k-modes for optimal grid (default: match build_k_arr)")
+    args = parser.parse_args()
+
     bg = compute_background(params)
     print("=== nanoCMB Background Cosmology ===")
     print(f"H₀ = {bg['H0'] * c_km_s:.2f} km/s/Mpc")
@@ -1234,9 +1243,19 @@ def main():
     print(f"η* = {thermo['tau_star']:.2f} Mpc")
     print(f"z_reion = {thermo['z_reion']:.2f}")
 
+    # Build k-grid
+    k_arr = None
+    if args.optk:
+        from optk import optimal_k_grid
+        k_default = build_k_arr()
+        N = args.optk_n if args.optk_n is not None else len(k_default)
+        k_arr = optimal_k_grid(N=N, mode="ode",
+                               k_min=k_default[0], k_max=k_default[-1])
+        print(f"\nUsing optimal k-grid (N={N})")
+
     # Compute CMB angular power spectra
     print("\n=== Computing Power Spectra ===")
-    result = compute_cls(bg, thermo, params)
+    result = compute_cls(bg, thermo, params, k_arr=k_arr)
 
     # Print peak values as sanity check
     ells = result['ells']
