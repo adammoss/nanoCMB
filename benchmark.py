@@ -17,7 +17,7 @@ param_ranges = {
 }
 
 N_SIGMA = 3
-N_SAMPLES = 5
+N_SAMPLES = 50
 SEED = 42
 
 

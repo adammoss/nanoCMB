@@ -1094,6 +1094,10 @@ def _pool_solve_k(k):
 
 _bessel_cache = {}
 
+# Round required x_max up to shared cache buckets so nearby cosmologies
+# can reuse a single Bessel table rather than rebuilding every run.
+BESSEL_CACHE_X_BUCKET = 250.0
+
 
 def _build_bessel_tables(ells_compute, x_max, dx):
     """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation.
@@ -1102,8 +1106,10 @@ def _build_bessel_tables(ells_compute, x_max, dx):
     also persisted to disk so that subsequent runs skip the expensive
     scipy.special.jv evaluation entirely.
     """
-    # Cache key: ells tuple + grid parameters
-    cache_key = (tuple(ells_compute.astype(int)), round(x_max, 2), dx)
+    # Cache key: ells tuple + quantized x_max + grid parameters.
+    x_max_cache = np.ceil(x_max / BESSEL_CACHE_X_BUCKET) * BESSEL_CACHE_X_BUCKET
+    x_max_cache = max(x_max_cache, x_max + dx)
+    cache_key = (tuple(ells_compute.astype(int)), round(x_max_cache, 2), dx)
     if cache_key in _bessel_cache:
         return _bessel_cache[cache_key]
 
@@ -1121,7 +1127,7 @@ def _build_bessel_tables(ells_compute, x_max, dx):
         _bessel_cache[cache_key] = result
         return result
 
-    n_x = int(np.ceil(x_max / dx)) + 2
+    n_x = int(np.ceil(x_max_cache / dx)) + 2
     x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
     x_safe = np.where(x_tab > 1e-30, x_tab, 1.0)
     pref = np.where(x_tab > 1e-30, np.sqrt(np.pi / (2.0 * x_safe)), 0.0)
