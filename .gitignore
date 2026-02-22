@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Mac OS
+.DS_Store
+
 # nanoCMB caches and output
 _source_cache*.npz
 nanocmb_output.npz
