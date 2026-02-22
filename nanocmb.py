@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1k lines of readable Python. 
+in ~1k lines of readable Python.
 
 Features:
   - Full RECFAST recombination (H + He ODEs, matter temperature)
@@ -21,8 +21,7 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 """
 
 import numpy as np
-from scipy import integrate, interpolate, special
-from scipy import optimize
+from scipy import integrate, interpolate, optimize, special
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -145,9 +144,7 @@ def sound_horizon(a, bg):
     """Comoving sound horizon r_s(a) = ∫₀ᵃ c_s da'/(a'²H)."""
     def integrand(ap):
         R = 0.75 * bg['grhob'] * ap / bg['grhog']
-        grhoa2 = (bg['grhog'] + bg['grhornomass']
-                  + (bg['grhoc'] + bg['grhob']) * ap + bg['grhov'] * ap**4)
-        return 1.0 / np.sqrt(grhoa2 * (1.0 + R))
+        return 1.0 / np.sqrt(grhoa2(ap, bg) * (1.0 + R))
     return integrate.quad(integrand, 0, a)[0]
 
 
@@ -926,7 +923,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
       j_ℓ': visibility×(σ+v_b)                         [Doppler]
       j_ℓ'': visibility×Π                               [quadrupole]
     """
-    # Starting time: kτ_start = 0.1 (safely in the super-horizon regime)
+    # Starting time: kτ_start = 0.01 (safely in the super-horizon regime)
     tau_start = min(0.01 / k, tau_out[0] * 0.5)
     tau_start = max(tau_start, 0.1)  # don't start before τ = 0.1 Mpc
 
@@ -1173,7 +1170,7 @@ def compute_cls(bg, thermo, params):
     tau_out = tau_grid(N=2000, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
-    
+
     # --- Evolve all k modes and store source functions ---
     print("Evolving perturbations...")
     _args = (bg, thermo, pgrid, tau_out)
@@ -1327,10 +1324,6 @@ def compute_cls(bg, thermo, params):
 # ============================================================
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="nanoCMB — minimal CMB power spectrum calculator")
-    args = parser.parse_args()
-
     bg = compute_background(params)
     print("=== Background ===")
     print(f"H₀ = {bg['H0'] * c_km_s:.2f} km/s/Mpc")
