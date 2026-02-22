@@ -979,42 +979,9 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 # ============================================================
 
 
-def _weight_cl(k, bg, thermo, params, ell_min, ell_max, n_ell_samples, isw_weight):
-    """Integrand curvature model for C_ell integration."""
-    ells = np.unique(np.geomspace(ell_min, ell_max, n_ell_samples).astype(int))
-    primordial = k ** (params['n_s'] + 2)
-    damping = np.exp(-2.0 * (k / thermo['k_D']) ** 2)
-    sigma_k = 1.0 / thermo['delta_tau_rec']
-    chi_star = bg['tau0'] - thermo['tau_star']
-    chi_reion = bg['tau0'] - thermo['tau_reion']
-    total = np.zeros_like(k)
-    for ell in ells:
-        envelope = np.exp(-0.5 * ((k - ell / chi_star) / (3.0 * sigma_k)) ** 2)
-        acoustic_curv = (1.0 / thermo['r_s']) ** 2 * envelope
-        smooth_curv = sigma_k ** 2 * envelope
-        recomb = np.maximum(acoustic_curv, smooth_curv) * primordial * np.maximum(damping, 0.02)
-        if ell < 100:
-            sigma_isw = 1.0 / thermo['delta_tau_reion']
-            isw_env = np.exp(-0.5 * ((k - ell / chi_reion) / (5.0 * sigma_isw)) ** 2)
-            recomb += isw_weight * sigma_isw ** 2 * isw_env * primordial
-        total += recomb
-    return total
-
-
-def _weight_ode(k, bg, thermo, params):
-    """Curvature model for ODE k-grid (source function interpolation)."""
-    primordial = k ** (params['n_s'] + 2)
-    damping = np.exp(-2.0 * (k / thermo['k_D']) ** 2)
-    acoustic_curv = (1.0 / thermo['r_s']) ** 2
-    k_transition = 1.0 / thermo['r_s']
-    smooth_curv = (k / k_transition) ** 2 * (1.0 / bg['tau_eq']) ** 2
-    curvature = np.maximum(acoustic_curv, smooth_curv)
-    return curvature * primordial * np.maximum(damping, 0.02)
-
-
 def optimal_k_grid(N, mode, bg, thermo, params,
                    k_min=1e-5, k_max=0.4,
-                   ell_min=2, ell_max=2500, n_ell_samples=30, isw_weight=0.3,
+                   ell_min=2, ell_max=2500, n_ell_samples=30,
                    n_eval=5000):
     """Compute an optimal non-uniform k-grid for CMB computation.
 
@@ -1023,11 +990,24 @@ def optimal_k_grid(N, mode, bg, thermo, params,
     x = np.linspace(np.log(k_min), np.log(k_max), n_eval)
     k = np.exp(x)
 
+    # Shared quantities
+    primordial = k ** (params['n_s'] + 2)
+    damped = primordial * np.maximum(np.exp(-2.0 * (k / thermo['k_D']) ** 2), 0.02)
+    acoustic_curv = (1.0 / thermo['r_s']) ** 2
+
     if mode == "cl":
-        raw_weight = _weight_cl(k, bg, thermo, params, ell_min, ell_max, n_ell_samples, isw_weight)
+        sigma_k = 1.0 / thermo['delta_tau_rec']
+        chi_star = bg['tau0'] - thermo['tau_star']
+        ells = np.unique(np.geomspace(ell_min, ell_max, n_ell_samples).astype(int))
+        raw_weight = np.zeros_like(k)
+        for ell in ells:
+            envelope = np.exp(-0.5 * ((k - ell / chi_star) / (3.0 * sigma_k)) ** 2)
+            curv = np.maximum(acoustic_curv, sigma_k ** 2) * envelope
+            raw_weight += curv * damped
         floor = 1e-6 * np.max(raw_weight)
     else:
-        raw_weight = _weight_ode(k, bg, thermo, params)
+        smooth_curv = (k * thermo['r_s']) ** 2 / bg['tau_eq'] ** 2
+        raw_weight = np.maximum(acoustic_curv, smooth_curv) * damped
         floor = 0.005 * np.max(raw_weight)
 
     density = (raw_weight + floor) ** (1.0 / 3.0)
