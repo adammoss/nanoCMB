@@ -3,9 +3,9 @@
 import numpy as np
 import time
 from nanocmb import (compute_background, compute_thermodynamics, params,
-                     setup_perturbation_grid, optimal_tau_grid,
+                     setup_perturbation_grid, tau_grid,
                      evolve_k, _pool_init, _pool_solve_k, _boltzmann_rhs,
-                     NVAR, optimal_k_grid)
+                     NVAR, k_grid)
 
 
 def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
@@ -21,7 +21,7 @@ from scipy import interpolate
 def time_pipeline(bg, thermo, k_arr, label=""):
     pgrid = setup_perturbation_grid(bg, thermo)
     tau0 = bg['tau0']
-    tau_out = optimal_tau_grid(N=1350, k_max=k_arr[-1], bg=bg, thermo=thermo,
+    tau_out = tau_grid(N=1350, k_max=k_arr[-1], bg=bg, thermo=thermo,
                                tau_min=1.0, tau_max=tau0 - 1)
     nk = len(k_arr)
 
@@ -87,7 +87,7 @@ def main():
     time_pipeline(bg, thermo, k_default, "default (338)")
 
     for N in [100, 150, 200, 250, 338]:
-        k_opt = optimal_k_grid(N=N, mode="ode", bg=bg, thermo=thermo, params=params,
+        k_opt = k_grid(N=N, mode="ode", bg=bg, thermo=thermo, params=params,
                                k_min=k_min, k_max=k_max)
         time_pipeline(bg, thermo, k_opt, f"optimal ODE N={N}")
 

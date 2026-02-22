@@ -1,4 +1,4 @@
-"""Compare optimal_tau_grid with the hand-tuned build_tau_out from nanocmb."""
+"""Compare tau_grid with the hand-tuned build_tau_out from nanocmb."""
 
 import numpy as np
 import matplotlib
@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from nanocmb import (compute_background, compute_thermodynamics, params,
-                     optimal_tau_grid)
+                     tau_grid)
 
 
 def build_tau_out(thermo, tau0):
@@ -166,15 +166,15 @@ if __name__ == "__main__":
     print(f"build_tau_out: N={N_hand}, range=[{tau_hand[0]:.1f}, {tau_hand[-1]:.1f}]")
 
     # Optimal grid matched to same N and range
-    tau_opt = optimal_tau_grid(
+    tau_opt = tau_grid(
         N=N_hand, k_max=0.3, bg=bg, thermo=thermo,
         tau_min=tau_hand[0], tau_max=tau_hand[-1],
     )
-    print(f"optimal_tau_grid: N={len(tau_opt)}, range=[{tau_opt[0]:.1f}, {tau_opt[-1]:.1f}]")
+    print(f"tau_grid: N={len(tau_opt)}, range=[{tau_opt[0]:.1f}, {tau_opt[-1]:.1f}]")
     print()
 
     diagnose_tau_grid(tau_hand, bg, thermo, label="build_tau_out (hand-tuned)")
-    diagnose_tau_grid(tau_opt, bg, thermo, label="optimal_tau_grid")
+    diagnose_tau_grid(tau_opt, bg, thermo, label="tau_grid")
 
     plot_comparison(
         tau_hand, tau_opt,

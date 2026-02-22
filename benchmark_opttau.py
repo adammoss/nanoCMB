@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 from nanocmb import (compute_background, compute_thermodynamics, compute_cls,
-                     params, optimal_tau_grid)
+                     params, tau_grid)
 
 
 def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
@@ -116,7 +116,7 @@ def main():
     print("=" * 60)
     print(f"Optimal tau (N={N_default})")
     print("=" * 60)
-    tau_opt = optimal_tau_grid(N=N_default, k_max=k_default[-1], bg=bg, thermo=thermo,
+    tau_opt = tau_grid(N=N_default, k_max=k_default[-1], bg=bg, thermo=thermo,
                               tau_min=tau_default[0], tau_max=tau_default[-1])
     s = run(bg, thermo, camb_data, tau_out=tau_opt,
             label=f"optimal tau N={N_default}")
@@ -128,7 +128,7 @@ def main():
         print("=" * 60)
         print(f"Optimal tau (N={N})")
         print("=" * 60)
-        tau_opt = optimal_tau_grid(N=N, k_max=k_default[-1], bg=bg, thermo=thermo,
+        tau_opt = tau_grid(N=N, k_max=k_default[-1], bg=bg, thermo=thermo,
                                   tau_min=tau_default[0], tau_max=tau_default[-1])
         s = run(bg, thermo, camb_data, tau_out=tau_opt,
                 label=f"optimal tau N={N}")

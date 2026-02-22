@@ -1,4 +1,4 @@
-"""Compare optimal_k_grid with hand-tuned grids from nanocmb.
+"""Compare k_grid with hand-tuned grids from nanocmb.
 
 Produces two figures:
   1. ODE grid comparison  (optimal ODE mode vs build_k_arr)
@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from nanocmb import (optimal_k_grid,
+from nanocmb import (k_grid,
                      compute_background, compute_thermodynamics, params)
 
 
@@ -164,11 +164,11 @@ print("=" * 60)
 
 k_hand_ode = clean_grid(build_k_arr())
 N_ode = len(k_hand_ode)
-k_opt_ode = optimal_k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
+k_opt_ode = k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
                            k_min=k_hand_ode[0], k_max=k_hand_ode[-1])
 
 diagnose_grid(k_hand_ode, bg, thermo, label="build_k_arr (hand-tuned)")
-diagnose_grid(k_opt_ode, bg, thermo, label="optimal_k_grid (ODE mode)")
+diagnose_grid(k_opt_ode, bg, thermo, label="k_grid (ODE mode)")
 
 plot_comparison(
     k_hand_ode, k_opt_ode,
@@ -186,11 +186,11 @@ print("=" * 60)
 
 k_hand_fine = clean_grid(build_k_fine(build_k_arr()))
 N_fine = len(k_hand_fine)
-k_opt_fine = optimal_k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
+k_opt_fine = k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
                             k_min=k_hand_fine[0], k_max=k_hand_fine[-1])
 
 diagnose_grid(k_hand_fine, bg, thermo, label="k_fine (hand-tuned)")
-diagnose_grid(k_opt_fine, bg, thermo, label="optimal_k_grid (CL mode)")
+diagnose_grid(k_opt_fine, bg, thermo, label="k_grid (CL mode)")
 
 plot_comparison(
     k_hand_fine, k_opt_fine,

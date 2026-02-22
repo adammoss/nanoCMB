@@ -975,12 +975,13 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 
 
 # ============================================================
-# OPTIMAL GRID CONSTRUCTION
+# GRID CONSTRUCTION
+# Non-uniform grids in k and τ via equidistribution of
+# trapezoidal quadrature error: node density ∝ |f''|^(1/3).
 # ============================================================
 
-
-def optimal_k_grid(N, mode, bg, thermo, params,
-                   k_min=1e-5, k_max=0.4,
+def k_grid(N, mode, bg, thermo, params,
+                   k_min=1e-5, k_max=0.5,
                    ell_min=2, ell_max=2500, n_ell_samples=30,
                    n_eval=5000):
     """Compute an optimal non-uniform k-grid for CMB computation.
@@ -1022,7 +1023,7 @@ def optimal_k_grid(N, mode, bg, thermo, params,
     return k_grid
 
 
-def optimal_tau_grid(N, k_max, bg, thermo,
+def tau_grid(N, k_max, bg, thermo,
                      tau_min=1.0, tau_max=None, n_eval=10000):
     """Compute an optimal non-uniform tau grid for the LOS integral."""
     if tau_max is None:
@@ -1152,7 +1153,7 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
-def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
+def compute_cls(bg, thermo, params):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
@@ -1162,26 +1163,17 @@ def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
     print("Setting up perturbation grid...")
     pgrid = setup_perturbation_grid(bg, thermo)
     tau0 = bg['tau0']
-
-    # --- Build optimal grids if not supplied ---
-    if k_arr is None:
-        k_arr = optimal_k_grid(N=340, mode="ode", bg=bg, thermo=thermo, params=params)
-    if k_fine is None:
-        k_fine = optimal_k_grid(N=4000, mode="cl", bg=bg, thermo=thermo, params=params,
-                                k_min=k_arr[0], k_max=k_arr[-1])
-    if tau_out is None:
-        tau_out = optimal_tau_grid(N=1350, k_max=k_arr[-1], bg=bg, thermo=thermo,
-                                  tau_min=1.0, tau_max=tau0 - 1)
-
-    # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
-    ntau = len(tau_out)
-    print(f"  {ntau} output time steps")
 
-    # --- k-sampling ---
+    # --- Build grids ---
+    k_arr = k_grid(N=400, mode="ode", bg=bg, thermo=thermo, params=params)
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
-
+    k_fine = k_grid(N=4000, mode="cl", bg=bg, thermo=thermo, params=params, k_min=k_arr[0], k_max=k_arr[-1])
+    tau_out = tau_grid(N=2000, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
+    ntau = len(tau_out)
+    print(f"  {ntau} output time steps")
+    
     # --- Evolve all k modes and store source functions ---
     print("Evolving perturbations...")
     _args = (bg, thermo, pgrid, tau_out)
@@ -1253,7 +1245,7 @@ def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
     def _compute_ell_transfer(il, ell):
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
-        k_hi = (ell + 2000) / chi_star if chi_star > 0 else k_fine[-1]
+        k_hi = (ell + 2500) / chi_star if chi_star > 0 else k_fine[-1]
         ik_lo = max(0, np.searchsorted(k_fine, k_lo) - 1)
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
 
@@ -1337,18 +1329,12 @@ def compute_cls(bg, thermo, params, k_arr=None, k_fine=None, tau_out=None):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="nanoCMB — minimal CMB power spectrum calculator")
-    parser.add_argument('--nk-ode', type=int, default=400,
-                        help="Number of ODE k-modes (default: 340)")
-    parser.add_argument('--nk-fine', type=int, default=4000,
-                        help="Number of fine k-modes (default: 4000)")
-    parser.add_argument('--ntau', type=int, default=2000,
-                        help="Number of tau points (default: 1350)")
     args = parser.parse_args()
 
     bg = compute_background(params)
     print("=== Background ===")
     print(f"H₀ = {bg['H0'] * c_km_s:.2f} km/s/Mpc")
-    print(f"η₀ = {bg['tau0']:.2f} Mpc")
+    print(f"τ₀ = {bg['tau0']:.2f} Mpc")
     print(f"τ_eq = {bg['tau_eq']:.2f} Mpc")
 
     thermo = compute_thermodynamics(bg, params)
@@ -1357,22 +1343,11 @@ def main():
     print(f"τ* = {thermo['tau_star']:.2f} Mpc")
     print(f"r_s = {thermo['r_s']:.2f} Mpc")
     print(f"k_D = {thermo['k_D']:.4f} Mpc⁻¹")
-    print(f"δτ_rec = {thermo['delta_tau_rec']:.2f} Mpc")
     print(f"z_reion = {thermo['z_reion']:.2f}")
-    print(f"τ_reion = {thermo['tau_reion']:.2f} Mpc")
-    print(f"δτ_reion = {thermo['delta_tau_reion']:.2f} Mpc")
 
     # Compute CMB angular power spectra
-    print(f"\nUsing optimal grids (nk_ode={args.nk_ode}, "
-          f"nk_fine={args.nk_fine}, ntau={args.ntau})")
     print("\n=== Computing Power Spectra ===")
-    k_arr = optimal_k_grid(N=args.nk_ode, mode="ode", bg=bg, thermo=thermo, params=params)
-    k_fine = optimal_k_grid(N=args.nk_fine, mode="cl", bg=bg, thermo=thermo, params=params,
-                            k_min=k_arr[0], k_max=k_arr[-1])
-    tau0 = bg['tau0']
-    tau_out = optimal_tau_grid(N=args.ntau, k_max=k_arr[-1], bg=bg, thermo=thermo,
-                               tau_min=1.0, tau_max=tau0 - 1)
-    result = compute_cls(bg, thermo, params, k_arr=k_arr, k_fine=k_fine, tau_out=tau_out)
+    result = compute_cls(bg, thermo, params)
 
     # Print peak values as sanity check
     ells = result['ells']

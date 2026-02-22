@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from nanocmb import (compute_background, compute_thermodynamics, compute_cls,
-                     params, optimal_k_grid)
+                     params, k_grid)
 
 
 def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
@@ -105,7 +105,7 @@ def main():
         print("=" * 60)
         print(f"Optimal ODE N={N_ode}, default fine=4000")
         print("=" * 60)
-        k_ode = optimal_k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
+        k_ode = k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
                               k_min=k_min, k_max=k_max)
         s = run_and_validate(bg, thermo, camb_data, k_arr=k_ode,
                              label=f"optODE={N_ode} fine=4000")
@@ -117,7 +117,7 @@ def main():
         print("=" * 60)
         print(f"Default ODE={N_default}, optimal fine N={N_fine}")
         print("=" * 60)
-        k_fine = optimal_k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
+        k_fine = k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
                                 k_min=k_min, k_max=k_max)
         s = run_and_validate(bg, thermo, camb_data, k_fine=k_fine,
                              label=f"ODE={N_default} optFine={N_fine}")
@@ -129,9 +129,9 @@ def main():
         print("=" * 60)
         print(f"Both optimal: ODE={N_ode}, fine={N_fine}")
         print("=" * 60)
-        k_ode = optimal_k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
+        k_ode = k_grid(N=N_ode, mode="ode", bg=bg, thermo=thermo, params=params,
                                k_min=k_min, k_max=k_max)
-        k_fine = optimal_k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
+        k_fine = k_grid(N=N_fine, mode="cl", bg=bg, thermo=thermo, params=params,
                                 k_min=k_min, k_max=k_max)
         s = run_and_validate(bg, thermo, camb_data, k_arr=k_ode, k_fine=k_fine,
                              label=f"optODE={N_ode} optFine={N_fine}")
