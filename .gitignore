@@ -9,6 +9,7 @@ __pycache__/
 _source_cache*.npz
 nanocmb_output.npz
 camb_reference.npz
+benchmark_output.npz
 
 # CAMB reference code
 CAMB/
