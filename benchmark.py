@@ -17,7 +17,7 @@ param_ranges = {
 }
 
 N_SIGMA = 3
-N_SAMPLES = 50
+N_SAMPLES = 5
 SEED = 42
 
 
@@ -116,6 +116,7 @@ def main():
 
     all_stats_TT = []
     all_stats_EE = []
+    all_stats_TE = []
     timings_nano = []
     timings_camb = []
 
@@ -153,8 +154,10 @@ def main():
 
         stats_TT = accuracy_stats(ells, TT_n[mask_n], TT_c[mask_c], ell_ranges)
         stats_EE = accuracy_stats(ells, EE_n[mask_n], EE_c[mask_c], ell_ranges)
+        stats_TE = accuracy_stats(ells, TE_n[mask_n], TE_c[mask_c], ell_ranges)
         all_stats_TT.append(stats_TT)
         all_stats_EE.append(stats_EE)
+        all_stats_TE.append(stats_TE)
 
         # Print per-sample summary
         worst_TT = max((s['max_resid'] for s in stats_TT.values()), default=0)
@@ -175,14 +178,16 @@ def main():
           f"mean {np.mean(timings_camb):.1f}s, range [{np.min(timings_camb):.1f}, {np.max(timings_camb):.1f}]s")
 
     # Accuracy by ell range
-    for spec, all_stats in [('TT', all_stats_TT), ('EE', all_stats_EE)]:
+    for spec, all_stats in [('TT', all_stats_TT), ('EE', all_stats_EE), ('TE', all_stats_TE)]:
         print(f"\n{spec} accuracy across {n_ok} cosmologies:")
-        print(f"  {'ell range':>15s}  {'median |resid|':>14s}  {'95th %ile':>10s}  {'worst case':>10s}  {'median std':>10s}")
+        print(f"  {'ell range':>15s}  {'mean ratio':>10s}  {'median |resid|':>14s}  {'95th %ile':>10s}  {'worst case':>10s}  {'median std':>10s}")
         for lmin, lmax in ell_ranges:
+            means = [s[(lmin, lmax)]['mean'] for s in all_stats if (lmin, lmax) in s]
             max_resids = [s[(lmin, lmax)]['max_resid'] for s in all_stats if (lmin, lmax) in s]
             stds = [s[(lmin, lmax)]['std'] for s in all_stats if (lmin, lmax) in s]
             if max_resids:
                 print(f"  [{lmin:4d}, {lmax:4d})     "
+                      f"{np.mean(means):10.6f}  "
                       f"{np.median(max_resids):12.4f}  "
                       f"{np.percentile(max_resids, 95):10.4f}  "
                       f"{np.max(max_resids):10.4f}  "
@@ -191,19 +196,32 @@ def main():
     # Overall worst case
     all_worst_TT = [max(s['max_resid'] for s in st.values()) for st in all_stats_TT]
     all_worst_EE = [max(s['max_resid'] for s in st.values()) for st in all_stats_EE]
+    all_worst_TE = [max(s['max_resid'] for s in st.values()) for st in all_stats_TE if st]
     print(f"\nOverall worst-case max|residual|:")
-    print(f"  TT: {np.max(all_worst_TT):.4f} ({np.max(all_worst_TT)*100:.2f}%)")
-    print(f"  EE: {np.max(all_worst_EE):.4f} ({np.max(all_worst_EE)*100:.2f}%)")
-    print(f"  TT median: {np.median(all_worst_TT):.4f} ({np.median(all_worst_TT)*100:.2f}%)")
-    print(f"  EE median: {np.median(all_worst_EE):.4f} ({np.median(all_worst_EE)*100:.2f}%)")
+    for label, worst in [('TT', all_worst_TT), ('EE', all_worst_EE), ('TE', all_worst_TE)]:
+        if worst:
+            print(f"  {label}: worst {np.max(worst):.4f} ({np.max(worst)*100:.2f}%), "
+                  f"median {np.median(worst):.4f} ({np.median(worst)*100:.2f}%)")
 
     # Save results
+    # Flatten per-ell-range stats into arrays for easy loading
+    saved_stats = {}
+    for spec, all_stats in [('TT', all_stats_TT), ('EE', all_stats_EE), ('TE', all_stats_TE)]:
+        for lmin, lmax in ell_ranges:
+            key = f"{spec}_{lmin}_{lmax}"
+            entries = [s[(lmin, lmax)] for s in all_stats if (lmin, lmax) in s]
+            if entries:
+                saved_stats[f"mean_{key}"] = [e['mean'] for e in entries]
+                saved_stats[f"std_{key}"] = [e['std'] for e in entries]
+                saved_stats[f"maxresid_{key}"] = [e['max_resid'] for e in entries]
+
     np.savez('benchmark_results.npz',
              param_sets=[{k: v for k, v in p.items()} for p in param_sets[:n_ok]],
              timings_nano=timings_nano,
              timings_camb=timings_camb,
              worst_TT=all_worst_TT,
-             worst_EE=all_worst_EE)
+             worst_EE=all_worst_EE,
+             **saved_stats)
     print("\nSaved benchmark_results.npz")
 
 

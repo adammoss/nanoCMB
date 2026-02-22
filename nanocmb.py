@@ -209,6 +209,7 @@ CB1_He2St = h_P * c_SI * L_He2St_ion / k_B        # He 2³S ionisation energy / 
 CL_He_2St = h_P * c_SI * L_He_2St / k_B           # He 2³S energy / k_B (K)
 a_rad = 4 * sigma_SB / c_SI                       # radiation constant (J/m³/K⁴)
 CT = (8.0 / 3.0) * (sigma_T / (m_e * c_SI)) * a_rad  # Compton cooling (s⁻¹ K⁻⁴)
+barssc0 = k_B / (m_H * c_SI**2)                      # baryon sound speed prefactor (K⁻¹)
 
 
 def compute_recombination(bg, params):
@@ -420,6 +421,9 @@ def compute_recombination(bg, params):
     z_ode = z_arr[he_ode_idx:]
     z_ode = z_ode[z_ode >= 0]
 
+    # Matter temperature: radiation temperature before ODE, then ODE solution.
+    Tmat_arr = T_cmb * (1.0 + z_arr)
+
     if len(z_ode) > 1:
         y0 = [xH_arr[he_ode_idx], xHe_arr[he_ode_idx],
               T_cmb * (1 + z_ode[0])]
@@ -429,20 +433,11 @@ def compute_recombination(bg, params):
             t_eval=z_ode, method='Radau', rtol=1e-6, atol=1e-10,
             max_step=5.0,
         )
-        n_sol = sol.y.shape[1]
-        for j in range(n_sol):
-            ii = he_ode_idx + j
-            if ii < len(z_arr):
-                xH_arr[ii] = sol.y[0, j]
-                xHe_arr[ii] = sol.y[1, j]
-
-    # Matter temperature history: defaults to radiation temperature before ODE.
-    Tmat_arr = T_cmb * (1.0 + z_arr)
-    if len(z_ode) > 1:
-        for j in range(n_sol):
-            ii = he_ode_idx + j
-            if ii < len(z_arr):
-                Tmat_arr[ii] = sol.y[2, j]
+        n_sol = min(sol.y.shape[1], len(z_arr) - he_ode_idx)
+        idx = he_ode_idx + n_sol
+        xH_arr[he_ode_idx:idx] = sol.y[0, :n_sol]
+        xHe_arr[he_ode_idx:idx] = sol.y[1, :n_sol]
+        Tmat_arr[he_ode_idx:idx] = sol.y[2, :n_sol]
 
     # For the recombination phase, x_e = x_H + f_He * x_He.
     xe_total[he_ode_idx:] = xH_arr[he_ode_idx:] + f_He * xHe_arr[he_ode_idx:]
@@ -555,10 +550,7 @@ def compute_thermodynamics(bg, params):
     # Baryon sound speed from thermodynamics (CAMB-style structure).
     # c_s,b^2 = (k_B T_m / m_H c^2) * [1 - (d ln T_m / d ln a)/3], with
     # composition factor in mean molecular weight.
-    barssc0 = k_B / (m_H * c_SI**2)
     dlnT_dln_a = np.gradient(np.log(np.maximum(Tmat_rec, 1e-30)), np.log(a_arr))
-    # CAMB-style consistency choice: use pre-reionization ionization fraction
-    # for cs2-related terms rather than reionization-boosted xe_final.
     barssc = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_arr)
     cs2_b = np.maximum(barssc * Tmat_rec * (1.0 - dlnT_dln_a / 3.0), 0.0)
     thermo['cs2_b'] = cs2_b
@@ -659,29 +651,25 @@ def setup_perturbation_grid(bg, thermo):
     grho_rad = bg['grhog'] + bg['grhornomass']
     adotrad = np.sqrt(grho_rad / 3.0)
 
-    # Build extended opacity interpolator covering all times.
-    # Before the thermodynamics grid (z > 1600): fully ionised, κ̇ = (1+f_He) × akthom/a²
-    # Within the thermodynamics grid: use the computed values
+    # Build extended interpolators covering all times.
+    # Before the thermodynamics grid (z > 1600): fully ionised, analytic values.
+    # Within the thermodynamics grid: use the computed values.
     tau_thermo = thermo['tau_arr']
-    opac_thermo = thermo['opacity']
-
-    # Extend to early times (τ < τ_thermo[0])
     tau_early = tau_grid[tau_grid < tau_thermo[0]]
     a_early = a_of_tau(tau_early)
-    opac_early = (1.0 + bg['f_He']) * bg['akthom'] / a_early**2
-    xe_early = 1.0 + 2.0 * bg['f_He']
-    Tmat_early = bg['T_cmb'] / a_early
-    barssc0 = k_B / (m_H * c_SI**2)
-    barssc_early = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_early)
-    cs2_early = np.maximum((4.0 / 3.0) * barssc_early * Tmat_early, 0.0)
-
-    # Concatenate early + thermodynamics grids
     tau_ext = np.concatenate([tau_early, tau_thermo])
-    opac_ext = np.concatenate([opac_early, opac_thermo])
-    cs2_ext = np.concatenate([cs2_early, thermo['cs2_b']])
 
-    opacity_interp = interpolate.CubicSpline(tau_ext, opac_ext)
-    cs2_interp = interpolate.CubicSpline(tau_ext, cs2_ext)
+    # Opacity: κ̇ = (1+f_He) × akthom/a² at early times (fully ionised)
+    opac_early = (1.0 + bg['f_He']) * bg['akthom'] / a_early**2
+    opacity_interp = interpolate.CubicSpline(
+        tau_ext, np.concatenate([opac_early, thermo['opacity']]))
+
+    # Baryon sound speed: c_s² = (4/3) k_B T_r / (μ m_H) at early times (T_m = T_r)
+    xe_early = 1.0 + 2.0 * bg['f_He']
+    barssc_early = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_early)
+    cs2_early = (4.0 / 3.0) * barssc_early * bg['T_cmb'] / a_early
+    cs2_interp = interpolate.CubicSpline(
+        tau_ext, np.concatenate([cs2_early, thermo['cs2_b']]))
 
     return {
         'sp_a_x': a_of_tau.x,
