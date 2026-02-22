@@ -16,3 +16,5 @@ plots/
 # Claude Code
 .claude/
 AGENTS.md
+
+.cache/

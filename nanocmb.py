@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1k lines of readable Python. 
+in ~1k lines of readable Python.
 
 Features:
   - Full RECFAST recombination (H + He ODEs, matter temperature)
@@ -21,8 +21,7 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 """
 
 import numpy as np
-from scipy import integrate, interpolate, special
-from scipy import optimize
+from scipy import integrate, interpolate, optimize, special
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -66,6 +65,7 @@ params = {
     'k_pivot': 0.05,                 # pivot scale (Mpc⁻¹)
     'ell_max': 2500,                 # maximum multipole
 }
+
 
 # ============================================================
 # BACKGROUND COSMOLOGY
@@ -140,16 +140,20 @@ def conformal_time(a, bg):
     return result.squeeze()
 
 
-def sound_speed_squared(a, bg):
-    """Photon-baryon sound speed c_s² = 1/(3(1+R)), R = 3ρ_b/(4ρ_γ)."""
-    R = 0.75 * bg['grhob'] * a / bg['grhog']
-    return 1.0 / (3.0 * (1.0 + R))
+def sound_horizon(a, bg):
+    """Comoving sound horizon r_s(a) = ∫₀ᵃ c_s da'/(a'²H)."""
+    def integrand(ap):
+        R = 0.75 * bg['grhob'] * ap / bg['grhog']
+        return 1.0 / np.sqrt(grhoa2(ap, bg) * (1.0 + R))
+    return integrate.quad(integrand, 0, a)[0]
 
 
 def compute_background(params):
     """Compute background quantities: η₀, sound horizon, etc."""
     bg = setup_background(params)
     bg['tau0'] = conformal_time(1.0, bg)
+    a_eq = (bg['grhog'] + bg['grhornomass']) / (bg['grhoc'] + bg['grhob'])
+    bg['tau_eq'] = conformal_time(a_eq, bg)
     return bg
 
 
@@ -471,11 +475,7 @@ def compute_thermodynamics(bg, params):
         return x_H_reion + x_he_extra
 
     def compute_reion_optical_depth(z_re):
-        """Compute optical depth from z=0 to z_reion_start using quadrature.
-
-        Uses the pure reionisation model x_e (not stitched), matching CAMB's
-        GetReionizationOptDepth which integrates Reion%x_e from 0 to zstart.
-        """
+        """Compute optical depth from z=0 to z_reion_start using quadrature."""
         z_reion_start = z_re + 8 * delta_z
         def integrand(z):
             a = 1.0 / (1 + z)
@@ -493,7 +493,7 @@ def compute_thermodynamics(bg, params):
         raise RuntimeError("tau_reion root not bracketed in z_re range [2, 30].")
     z_re = optimize.brentq(tau_residual, z_re_low, z_re_high, xtol=1e-8, rtol=1e-8)
 
-    # Refine z_arr in the reionisation region (CAMB adds ~50 steps here)
+    # Refine z_arr in the reionisation region
     z_reion_lo = max(0.01, z_re - 8 * delta_z)
     z_reion_hi = z_re + 8 * delta_z
     z_dense = np.linspace(z_reion_hi, z_reion_lo, 200)
@@ -545,6 +545,34 @@ def compute_thermodynamics(bg, params):
     peak_idx = np.argmax(visibility)
     thermo['z_star'] = z_arr[peak_idx]
     thermo['tau_star'] = tau_arr[peak_idx]
+
+    # --- Derived quantities for optimal grid construction ---
+    a_star = 1.0 / (1.0 + thermo['z_star'])
+    fwhm_to_sigma = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+    # Sound horizon
+    thermo['r_s'] = sound_horizon(a_star, bg)
+
+    # Silk damping scale (tabulated xe, so use trapezoidal on fine grid)
+    a_grid = np.linspace(a_arr[0], a_star, 5000)
+    R = 0.75 * bg['grhob'] * a_grid / bg['grhog']
+    dtauda_grid = dtauda(a_grid, bg)
+    kappa_dot = np.maximum(np.interp(a_grid, a_arr, xe_final) * bg['akthom'] / a_grid**2, 1e-30)
+    integrand_D = (R**2 + 16.0*(1.0+R)/15.0) / (6.0*(1.0+R)**2 * kappa_dot) * dtauda_grid
+    thermo['k_D'] = 1.0 / np.sqrt(np.trapezoid(integrand_D, a_grid))
+
+    # Visibility function width (Gaussian σ from FWHM)
+    half_max = visibility[peak_idx] / 2.0
+    tau_left = np.interp(half_max, visibility[:peak_idx+1], tau_arr[:peak_idx+1])
+    tau_right = np.interp(half_max, visibility[peak_idx:][::-1], tau_arr[peak_idx:][::-1])
+    thermo['delta_tau_rec'] = (tau_right - tau_left) / fwhm_to_sigma
+
+    # Reionization conformal time and width
+    z_rev, tau_rev = z_arr[::-1], tau_arr[::-1]
+    thermo['tau_reion'] = np.interp(z_re, z_rev, tau_rev)
+    thermo['delta_tau_reion'] = abs(
+        np.interp(z_re + 6*delta_z, z_rev, tau_rev)
+        - np.interp(max(0.01, z_re - 6*delta_z), z_rev, tau_rev)) / fwhm_to_sigma
 
     return thermo
 
@@ -895,7 +923,7 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
       j_ℓ': visibility×(σ+v_b)                         [Doppler]
       j_ℓ'': visibility×Π                               [quadrupole]
     """
-    # Starting time: kτ_start = 0.1 (safely in the super-horizon regime)
+    # Starting time: kτ_start = 0.01 (safely in the super-horizon regime)
     tau_start = min(0.01 / k, tau_out[0] * 0.5)
     tau_start = max(tau_start, 0.1)  # don't start before τ = 0.1 Mpc
 
@@ -944,6 +972,86 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 
 
 # ============================================================
+# GRID CONSTRUCTION
+# Non-uniform grids in k and τ via equidistribution of
+# trapezoidal quadrature error: node density ∝ |f''|^(1/3).
+# ============================================================
+
+def k_grid(N, mode, bg, thermo, params,
+                   k_min=1e-5, k_max=0.5,
+                   ell_min=2, ell_max=2500, n_ell_samples=30,
+                   n_eval=5000):
+    """Compute an optimal non-uniform k-grid for CMB computation.
+
+    mode="cl" optimised for C_ell integration; mode="ode" for source interpolation.
+    """
+    x = np.linspace(np.log(k_min), np.log(k_max), n_eval)
+    k = np.exp(x)
+
+    # Shared quantities
+    primordial = k ** (params['n_s'] + 2)
+    damped = primordial * np.maximum(np.exp(-2.0 * (k / thermo['k_D']) ** 2), 0.02)
+    acoustic_curv = (1.0 / thermo['r_s']) ** 2
+
+    if mode == "cl":
+        sigma_k = 1.0 / thermo['delta_tau_rec']
+        chi_star = bg['tau0'] - thermo['tau_star']
+        ells = np.unique(np.geomspace(ell_min, ell_max, n_ell_samples).astype(int))
+        raw_weight = np.zeros_like(k)
+        for ell in ells:
+            envelope = np.exp(-0.5 * ((k - ell / chi_star) / (3.0 * sigma_k)) ** 2)
+            curv = np.maximum(acoustic_curv, sigma_k ** 2) * envelope
+            raw_weight += curv * damped
+        floor = 1e-6 * np.max(raw_weight)
+    else:
+        smooth_curv = (k * thermo['r_s']) ** 2 / bg['tau_eq'] ** 2
+        raw_weight = np.maximum(acoustic_curv, smooth_curv) * damped
+        floor = 0.005 * np.max(raw_weight)
+
+    density = (raw_weight + floor) ** (1.0 / 3.0)
+    dx = x[1] - x[0]
+    cdf = np.cumsum(density) * dx
+    cdf -= cdf[0]
+    cdf /= cdf[-1]
+
+    k_grid = np.exp(np.interp(np.linspace(0, 1, N), cdf, x))
+    k_grid[0] = k_min
+    k_grid[-1] = k_max
+    return k_grid
+
+
+def tau_grid(N, k_max, bg, thermo,
+                     tau_min=1.0, tau_max=None, n_eval=10000):
+    """Compute an optimal non-uniform tau grid for the LOS integral."""
+    if tau_max is None:
+        tau_max = bg['tau0']
+
+    tau = np.linspace(tau_min, tau_max, n_eval)
+    tau_star = thermo['tau_star']
+    delta_tau_rec = thermo['delta_tau_rec']
+
+    # Recombination: visibility peak + acoustic source structure
+    g_rec = np.exp(-0.5 * ((tau - tau_star) / delta_tau_rec) ** 2)
+    g_broad = np.exp(-0.5 * ((tau - tau_star) / thermo['r_s']) ** 2)
+    weight = g_rec / delta_tau_rec**2 + g_broad * (k_max / np.sqrt(3.0))**2
+
+    # Reionization
+    g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
+    weight += 0.3 * g_reion / thermo['delta_tau_reion'] ** 2
+
+    density = (weight + 0.002 * np.max(weight)) ** (1.0 / 3.0)
+    dtau = tau[1] - tau[0]
+    cdf = np.cumsum(density) * dtau
+    cdf -= cdf[0]
+    cdf /= cdf[-1]
+
+    tau_grid = np.interp(np.linspace(0, 1, N), cdf, tau)
+    tau_grid[0] = tau_min
+    tau_grid[-1] = tau_max
+    return tau_grid
+
+
+# ============================================================
 # LINE-OF-SIGHT INTEGRATION AND POWER SPECTRA
 # Convolve source functions with spherical Bessel functions
 # to get transfer functions, then integrate over k for Cℓ.
@@ -961,8 +1069,35 @@ def _pool_solve_k(k):
     return evolve_k(k, _pool_bg, _pool_thermo, _pool_pgrid, _pool_tau_out)
 
 
+_bessel_cache = {}
+
+
 def _build_bessel_tables(ells_compute, x_max, dx):
-    """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation."""
+    """Precompute j_l(x) and j_{l+1}(x) on a uniform x-grid for LOS interpolation.
+
+    Results are cached in memory keyed by (ells, x_max, dx). The cache is
+    also persisted to disk so that subsequent runs skip the expensive
+    scipy.special.jv evaluation entirely.
+    """
+    # Cache key: ells tuple + grid parameters
+    cache_key = (tuple(ells_compute.astype(int)), round(x_max, 2), dx)
+    if cache_key in _bessel_cache:
+        return _bessel_cache[cache_key]
+
+    # Try loading from disk
+    import hashlib, os
+    key_str = f"{list(cache_key[0])}_{cache_key[1]}_{cache_key[2]}"
+    cache_hash = hashlib.md5(key_str.encode()).hexdigest()[:12]
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cache')
+    cache_file = os.path.join(cache_dir, f'bessel_{cache_hash}.npz')
+
+    if os.path.exists(cache_file):
+        data = np.load(cache_file)
+        result = (float(data['x0']), float(data['inv_dx']),
+                  int(data['n_x']), data['jl_tab'], data['jl1_tab'])
+        _bessel_cache[cache_key] = result
+        return result
+
     n_x = int(np.ceil(x_max / dx)) + 2
     x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
     x_safe = np.where(x_tab > 1e-30, x_tab, 1.0)
@@ -979,16 +1114,30 @@ def _build_bessel_tables(ells_compute, x_max, dx):
 
     for iu, ell in enumerate(l_unique):
         nu = ell + 0.5
-        jl = pref * special.jv(nu, x_tab)
+        # j_ell(x) is exponentially small for x < ell - O(ell^{1/3}).
+        # Skip the dead zone to avoid wasting time on zeros.
+        x_min = max(0.0, ell - 4.0 * ell**(1.0/3.0))
+        i_start = max(0, int(x_min / dx) - 1)
+        jl = np.zeros(n_x)
+        jl[i_start:] = pref[i_start:] * special.jv(nu, x_tab[i_start:])
         # Correct small-x limits for stability of interpolation near origin.
-        jl[0] = 1.0 if ell == 0 else 0.0
+        if i_start == 0:
+            jl[0] = 1.0 if ell == 0 else 0.0
         j_unique[iu, :] = jl
 
     for i, ell in enumerate(ells_compute):
         jl_tab[i, :] = j_unique[l_to_idx[int(ell)], :]
         jl1_tab[i, :] = j_unique[l_to_idx[int(ell + 1)], :]
 
-    return x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab
+    result = (x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab)
+    _bessel_cache[cache_key] = result
+
+    # Persist to disk
+    os.makedirs(cache_dir, exist_ok=True)
+    np.savez(cache_file, x0=x_tab[0], inv_dx=1.0/dx, n_x=n_x,
+             jl_tab=jl_tab, jl1_tab=jl1_tab)
+
+    return result
 
 
 def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
@@ -1001,45 +1150,6 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
-def build_tau_out(thermo, tau0, lo=-100.0, hi=360.0, n_early=55, n_rec=1050, n_late=150, n_re=100):
-    """Build the piecewise conformal-time grid used for source output.
-
-    Dense sampling around recombination (tau_star) captures the narrow
-    visibility peak, with extra points around reionization for low-ell
-    polarisation.
-    """
-    tau_star = thermo['tau_star']
-    tau_early = np.linspace(1.0, tau_star + lo, n_early)
-    tau_rec = np.linspace(tau_star + lo, tau_star + hi, n_rec)
-    tau_late = np.linspace(tau_star + hi, tau0 - 10, n_late)
-
-    z_rev = thermo['z_arr'][::-1]
-    tau_rev = thermo['tau_arr'][::-1]
-    z_re = thermo['z_reion']
-    z_re_lo = max(0.01, z_re - 6.0)
-    z_re_hi = z_re + 6.0
-    tau_re_lo = np.interp(z_re_lo, z_rev, tau_rev)
-    tau_re_hi = np.interp(z_re_hi, z_rev, tau_rev)
-    tau_re = np.linspace(min(tau_re_hi, tau_re_lo), max(tau_re_hi, tau_re_lo), n_re)
-    tau_out = np.unique(np.concatenate([tau_early, tau_rec, tau_late, tau_re]))
-    tau_out = tau_out[(tau_out > 0.1) & (tau_out < tau0 - 1)]
-    return tau_out
-
-
-def build_k_arr(k_min=4.0e-5, k_max=0.45, n_low=40, n_mid=180, n_mid_hi=70, n_high=50):
-    """Build the ODE k-grid for perturbation/source evolution.
-
-    The ODE grid only resolves acoustic structure in source functions
-    (period ≈ π/r_s ≈ 0.022 Mpc⁻¹). Bessel ringing is handled later by
-    interpolation to a finer k-grid for LOS integration.
-    """
-    k_low = np.logspace(np.log10(k_min), np.log10(0.008), n_low)
-    k_mid = np.linspace(0.008, 0.18, n_mid)
-    k_mid_hi = np.linspace(0.18, 0.30, n_mid_hi)
-    k_high = np.linspace(0.30, k_max, n_high)
-    return np.unique(np.concatenate([k_low, k_mid, k_mid_hi, k_high]))
-
-
 def compute_cls(bg, thermo, params):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
@@ -1050,17 +1160,16 @@ def compute_cls(bg, thermo, params):
     print("Setting up perturbation grid...")
     pgrid = setup_perturbation_grid(bg, thermo)
     tau0 = bg['tau0']
-
-    # --- Output time grid for source functions ---
     tau_star = thermo['tau_star']
-    tau_out = build_tau_out(thermo, tau0)
-    ntau = len(tau_out)
-    print(f"  {ntau} output time steps")
 
-    # --- k-sampling ---
-    k_arr = build_k_arr()
+    # --- Build grids ---
+    k_arr = k_grid(N=400, mode="ode", bg=bg, thermo=thermo, params=params)
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
+    k_fine = k_grid(N=4000, mode="cl", bg=bg, thermo=thermo, params=params, k_min=k_arr[0], k_max=k_arr[-1])
+    tau_out = tau_grid(N=2000, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
+    ntau = len(tau_out)
+    print(f"  {ntau} output time steps")
 
     # --- Evolve all k modes and store source functions ---
     print("Evolving perturbations...")
@@ -1087,15 +1196,7 @@ def compute_cls(bg, thermo, params):
     # --- Interpolate source functions to finer k-grid ---
     # Source functions are smooth in k, but the transfer function Δ_ℓ(k)
     # oscillates rapidly due to Bessel function ringing. A fine k-grid is
-    # needed for accurate ∫|Δ|² d(ln k) integration .
-    nk_fine = 4000
-    # Start dense linear spacing at k=0.002 (covers low-ℓ peak contributions)
-    k_lin_start = max(0.002, k_arr[0])
-    n_log = 80
-    k_fine = np.unique(np.concatenate([
-        np.logspace(np.log10(k_arr[0]), np.log10(k_lin_start), n_log),
-        np.linspace(k_lin_start, k_arr[-1], nk_fine - n_log),
-    ]))
+    # needed for accurate ∫|Δ|² d(ln k) integration.
     nk_fine = len(k_fine)
     lnk_ode = np.log(k_arr)
     lnk_fine = np.log(k_fine)
@@ -1135,13 +1236,13 @@ def compute_cls(bg, thermo, params):
 
     # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
-        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.1
+        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.03
     )
 
     def _compute_ell_transfer(il, ell):
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
         k_lo = x_lo / chi_max if chi_max > 0 else 0
-        k_hi = (ell + 2000) / chi_star if chi_star > 0 else k_fine[-1]
+        k_hi = (ell + 2500) / chi_star if chi_star > 0 else k_fine[-1]
         ik_lo = max(0, np.searchsorted(k_fine, k_lo) - 1)
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
 
@@ -1224,14 +1325,17 @@ def compute_cls(bg, thermo, params):
 
 def main():
     bg = compute_background(params)
-    print("=== nanoCMB Background Cosmology ===")
+    print("=== Background ===")
     print(f"H₀ = {bg['H0'] * c_km_s:.2f} km/s/Mpc")
-    print(f"η₀ = {bg['tau0']:.2f} Mpc")
+    print(f"τ₀ = {bg['tau0']:.2f} Mpc")
+    print(f"τ_eq = {bg['tau_eq']:.2f} Mpc")
 
     thermo = compute_thermodynamics(bg, params)
-    print(f"\n=== Recombination ===")
-    print(f"z* (visibility peak) = {thermo['z_star']:.1f}")
-    print(f"η* = {thermo['tau_star']:.2f} Mpc")
+    print(f"\n=== Thermodynamics ===")
+    print(f"z* = {thermo['z_star']:.1f}")
+    print(f"τ* = {thermo['tau_star']:.2f} Mpc")
+    print(f"r_s = {thermo['r_s']:.2f} Mpc")
+    print(f"k_D = {thermo['k_D']:.4f} Mpc⁻¹")
     print(f"z_reion = {thermo['z_reion']:.2f}")
 
     # Compute CMB angular power spectra
