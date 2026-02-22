@@ -70,7 +70,7 @@ for name, nano, ref in [('TT', TT_nano, TT_camb), ('EE', EE_nano, EE_camb)]:
         mask = (ells >= lmin) & (ells < lmax) & (ref > 0)
         if mask.sum() > 0:
             ratio = nano[mask] / ref[mask]
-            print(f"  {name} ℓ=[{lmin:4d},{lmax:4d}): mean ratio={np.mean(ratio):.3f}, std={np.std(ratio):.3f}")
+            print(f"  {name} ℓ=[{lmin:4d},{lmax:4d}): mean ratio={np.mean(ratio):.4f}, std={np.std(ratio):.4f}")
 
 # Save CAMB reference for plotting
 np.savez('camb_reference.npz', ells=ells_camb, DlTT=DlTT_camb, DlEE=DlEE_camb, DlTE=DlTE_camb)
@@ -284,6 +284,36 @@ try:
     plt.close(fig)
     print("Saved plots/thermo_checks.png")
 
+    # --- Baryon sound speed comparison ---
+    z_cs2 = np.linspace(0.01, 3000, 5000)
+    cs2_camb_data = results.get_background_redshift_evolution(z_cs2, vars=['cs2b'], format='dict')
+    cs2_camb = cs2_camb_data['cs2b']
+    cs2_nano = np.interp(z_cs2, z_rev, thermo['cs2_b'][::-1])
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    ax = axes[0]
+    ax.semilogy(z_cs2, cs2_camb, 'k-', label='CAMB', alpha=0.8)
+    ax.semilogy(z_cs2, np.maximum(cs2_nano, 1e-30), 'r--', label='nanoCMB', alpha=0.7)
+    ax.set_xlabel('Redshift z')
+    ax.set_ylabel(r'$c_{s,b}^2$')
+    ax.set_title('Baryon Sound Speed')
+    ax.legend()
+
+    ax = axes[1]
+    mask_cs2 = cs2_camb > 1e-15
+    ax.plot(z_cs2[mask_cs2], cs2_nano[mask_cs2] / cs2_camb[mask_cs2], 'r-', alpha=0.6)
+    ax.axhline(1, color='k', ls='--', lw=0.5)
+    ax.set_xlabel('Redshift z')
+    ax.set_ylabel('nanoCMB / CAMB')
+    ax.set_title(r'$c_{s,b}^2$ Ratio')
+    ax.set_ylim(0.95, 1.05)
+
+    fig.tight_layout()
+    fig.savefig('plots/cs2b_check.png', dpi=150)
+    plt.close(fig)
+    print("Saved plots/cs2b_check.png")
+
 except ImportError as e:
     print(f"matplotlib not available ({e}), skipping plots")
 
@@ -412,7 +442,8 @@ try:
         sol = sp_integrate.solve_ivp(
             lambda tau, y, _k=k: _boltzmann_rhs(tau, y, _k, pgrid['bg_vec'],
                 pgrid['sp_a_x'], pgrid['sp_a_c'],
-                pgrid['sp_op_x'], pgrid['sp_op_c']),
+                pgrid['sp_op_x'], pgrid['sp_op_c'],
+                pgrid['sp_cs_x'], pgrid['sp_cs_c']),
             [tau_start, tau_pert[-1]], y0,
             t_eval=tau_pert, method='Radau', rtol=1e-5, atol=1e-8,
             max_step=20.0)

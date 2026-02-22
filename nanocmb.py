@@ -436,10 +436,18 @@ def compute_recombination(bg, params):
                 xH_arr[ii] = sol.y[0, j]
                 xHe_arr[ii] = sol.y[1, j]
 
+    # Matter temperature history: defaults to radiation temperature before ODE.
+    Tmat_arr = T_cmb * (1.0 + z_arr)
+    if len(z_ode) > 1:
+        for j in range(n_sol):
+            ii = he_ode_idx + j
+            if ii < len(z_arr):
+                Tmat_arr[ii] = sol.y[2, j]
+
     # For the recombination phase, x_e = x_H + f_He * x_He.
     xe_total[he_ode_idx:] = xH_arr[he_ode_idx:] + f_He * xHe_arr[he_ode_idx:]
 
-    return z_arr, xe_total
+    return z_arr, xe_total, Tmat_arr
 
 
 def compute_thermodynamics(bg, params):
@@ -450,7 +458,7 @@ def compute_thermodynamics(bg, params):
     last scattering, and its width determines the thickness of that surface
     (which causes diffusion damping of small-scale anisotropies).
     """
-    z_arr, xe_arr = compute_recombination(bg, params)
+    z_arr, xe_arr, Tmat_rec = compute_recombination(bg, params)
 
     # Add reionisation: CAMB tanh model.
     f_He = bg['f_He']
@@ -501,8 +509,10 @@ def compute_thermodynamics(bg, params):
     z_new = np.sort(np.concatenate([z_arr[mask], z_dense]))[::-1]
     # Interpolate recombination x_e onto refined grid (z_arr is high→low, flip for interp)
     xe_new = np.interp(z_new[::-1], z_arr[::-1], xe_arr[::-1])[::-1]
+    Tmat_new = np.interp(z_new[::-1], z_arr[::-1], Tmat_rec[::-1])[::-1]
     z_arr = z_new
     xe_arr = xe_new
+    Tmat_rec = Tmat_new
 
     xe_final = np.maximum(build_reion_xe(z_arr, z_re), xe_arr)
 
@@ -529,6 +539,7 @@ def compute_thermodynamics(bg, params):
         'a_arr': a_arr,
         'tau_arr': tau_arr,
         'xe': xe_final,
+        'Tmat': Tmat_rec,
         'opacity': opacity,           # κ̇(η)
         'tau_optical': tau_optical,    # optical depth τ(η)
         'exptau': exptau,            # e^{-τ}
@@ -540,6 +551,17 @@ def compute_thermodynamics(bg, params):
     thermo['opacity_interp'] = interpolate.CubicSpline(tau_arr, opacity)
     thermo['exptau_interp'] = interpolate.CubicSpline(tau_arr, exptau)
     thermo['visibility_interp'] = interpolate.CubicSpline(tau_arr, visibility)
+
+    # Baryon sound speed from thermodynamics (CAMB-style structure).
+    # c_s,b^2 = (k_B T_m / m_H c^2) * [1 - (d ln T_m / d ln a)/3], with
+    # composition factor in mean molecular weight.
+    barssc0 = k_B / (m_H * c_SI**2)
+    dlnT_dln_a = np.gradient(np.log(np.maximum(Tmat_rec, 1e-30)), np.log(a_arr))
+    # CAMB-style consistency choice: use pre-reionization ionization fraction
+    # for cs2-related terms rather than reionization-boosted xe_final.
+    barssc = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_arr)
+    cs2_b = np.maximum(barssc * Tmat_rec * (1.0 - dlnT_dln_a / 3.0), 0.0)
+    thermo['cs2_b'] = cs2_b
 
     # Find the peak of the visibility function (surface of last scattering)
     peak_idx = np.argmax(visibility)
@@ -647,18 +669,27 @@ def setup_perturbation_grid(bg, thermo):
     tau_early = tau_grid[tau_grid < tau_thermo[0]]
     a_early = a_of_tau(tau_early)
     opac_early = (1.0 + bg['f_He']) * bg['akthom'] / a_early**2
+    xe_early = 1.0 + 2.0 * bg['f_He']
+    Tmat_early = bg['T_cmb'] / a_early
+    barssc0 = k_B / (m_H * c_SI**2)
+    barssc_early = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_early)
+    cs2_early = np.maximum((4.0 / 3.0) * barssc_early * Tmat_early, 0.0)
 
     # Concatenate early + thermodynamics grids
     tau_ext = np.concatenate([tau_early, tau_thermo])
     opac_ext = np.concatenate([opac_early, opac_thermo])
+    cs2_ext = np.concatenate([cs2_early, thermo['cs2_b']])
 
     opacity_interp = interpolate.CubicSpline(tau_ext, opac_ext)
+    cs2_interp = interpolate.CubicSpline(tau_ext, cs2_ext)
 
     return {
         'sp_a_x': a_of_tau.x,
         'sp_a_c': a_of_tau.c,
         'sp_op_x': opacity_interp.x,
         'sp_op_c': opacity_interp.c,
+        'sp_cs_x': cs2_interp.x,
+        'sp_cs_c': cs2_interp.c,
         'bg_vec': np.array([bg['grhog'], bg['grhornomass'], bg['grhoc'],
                             bg['grhob'], bg['grhov']]),
         'adotrad': adotrad,
@@ -748,7 +779,7 @@ def _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c):
 
 
 @_jit
-def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
+def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x, sp_cs_c):
     """Right-hand side of the Boltzmann hierarchy: dy/dτ.
 
     Implements the synchronous gauge equations from CAMB's derivs() subroutine.
@@ -761,8 +792,10 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
      etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir) = \
         _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c)
     opacity = max(_cubic_eval(sp_op_x, sp_op_c, tau), 1e-30)
+    cs2_b = max(_cubic_eval(sp_cs_x, sp_cs_c, tau), 0.0)
     photbar = grhog_t / grhob_t
     pb43 = 4.0 / 3.0 * photbar
+    delta_p_b = cs2_b * clxb
 
     # Determine if tight coupling is active
     tight_coupling = (k / opacity < 0.01) and (1.0 / (opacity * tau) < 0.01)
@@ -787,11 +820,11 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
         pig_tc = 32.0 / 45.0 * k / opacity * (sigma + vb)
         polter = pig_tc / 4.0
 
-        vbdot = (-adotoa * vb + k / 4.0 * pb43 * (clxg - 2.0 * pig_tc)) / (1.0 + pb43)
+        vbdot = (-adotoa * vb + k * delta_p_b + k / 4.0 * pb43 * (clxg - 2.0 * pig_tc)) / (1.0 + pb43)
         dy[IX_VB] = vbdot
 
         dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
-        qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig_tc
+        qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb + k * delta_p_b) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig_tc
         dy[IX_G + 1] = qgdot
         dy[IX_G + 2] = opacity * (pig_tc - pig)
 
@@ -802,11 +835,11 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c):
         # Full Boltzmann hierarchy
         # Polter: polarisation source Π = pig/10 + 3E₂/5
         polter = pig / 10.0 + 9.0 / 15.0 * E2
-        vbdot = -adotoa * vb - photbar * opacity * (4.0 / 3.0 * vb - qg)
+        vbdot = -adotoa * vb + k * delta_p_b - photbar * opacity * (4.0 / 3.0 * vb - qg)
         dy[IX_VB] = vbdot
 
         dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
-        qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig
+        qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb + k * delta_p_b) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig
         dy[IX_G + 1] = qgdot
 
         Theta3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
@@ -936,9 +969,11 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     sp_a_c = pgrid['sp_a_c']
     sp_op_x = pgrid['sp_op_x']
     sp_op_c = pgrid['sp_op_c']
+    sp_cs_x = pgrid['sp_cs_x']
+    sp_cs_c = pgrid['sp_cs_c']
 
     sol = integrate.solve_ivp(
-        lambda tau, y: _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c),
+        lambda tau, y: _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x, sp_cs_c),
         [tau_start, tau_out[-1]],
         y0,
         t_eval=tau_out,
@@ -1178,7 +1213,8 @@ def compute_cls(bg, thermo, params):
     # Warmup JIT (no-op without numba) before forking workers
     _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
                    pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c'],
-                   pgrid['sp_op_x'], pgrid['sp_op_c'])
+                   pgrid['sp_op_x'], pgrid['sp_op_c'],
+                   pgrid['sp_cs_x'], pgrid['sp_cs_c'])
 
     try:
         from multiprocessing import Pool, cpu_count
