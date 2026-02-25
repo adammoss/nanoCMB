@@ -1274,7 +1274,7 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     # x_2d[ik, itau] = k * chi — precompute once
     x_2d_full = k_fine[:, None] * chi_arr[None, :]
 
-    # Build Bessel lookup tables once (CAMB-like: precompute + interpolate)
+    # Build Bessel lookup tables once
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
         ells_compute, float(np.max(x_2d_full)) + 2.0, 0.03
     )
