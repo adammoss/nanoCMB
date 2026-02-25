@@ -1013,10 +1013,11 @@ def k_grid(N, mode, bg, thermo, params,
 
     # Shared quantities
     primordial = k ** (params['n_s'] + 2)
-    damped = primordial * np.maximum(np.exp(-2.0 * (k / thermo['k_D']) ** 2), 0.02)
     acoustic_curv = (1.0 / thermo['r_s']) ** 2
 
     if mode == "cl":
+        # Source-level damping: exp(-(k/k_D)^2)
+        damped = primordial * np.exp(-1.0 * (k / thermo['k_D']) ** 2)
         sigma_k = 1.0 / thermo['delta_tau_rec']
         chi_star = bg['tau0'] - thermo['tau_star']
         ells = np.unique(np.geomspace(ell_min, ell_max, n_ell_samples).astype(int))
@@ -1027,6 +1028,8 @@ def k_grid(N, mode, bg, thermo, params,
             raw_weight += curv * damped
         floor = 1e-6 * np.max(raw_weight)
     else:
+        # Source function damping: exp(-(k/k_D)^2) — single power, not squared
+        damped = primordial * np.exp(-1.0 * (k / thermo['k_D']) ** 2)
         smooth_curv = (k * thermo['r_s']) ** 2 / bg['tau_eq'] ** 2
         raw_weight = np.maximum(acoustic_curv, smooth_curv) * damped
         floor = 0.005 * np.max(raw_weight)
@@ -1062,7 +1065,7 @@ def tau_grid(N, k_max, bg, thermo,
     g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
     weight += 0.3 * g_reion / thermo['delta_tau_reion'] ** 2
 
-    density = (weight + 0.002 * np.max(weight)) ** (1.0 / 3.0)
+    density = (weight + 0.005 * np.max(weight)) ** (1.0 / 3.0)
     dtau = tau[1] - tau[0]
     cdf = np.cumsum(density) * dtau
     cdf -= cdf[0]
@@ -1179,24 +1182,31 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
-def compute_cls(bg, thermo, params):
+def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
+                k_arr=None, k_fine=None, tau_out=None):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
     evolve the Boltzmann hierarchy and extract source functions. Then for
     each multipole ℓ, we convolve with j_ℓ(k(τ₀−τ)) and integrate over k.
+
+    Grids k_arr, k_fine, tau_out can be passed directly; otherwise they are
+    built from the N_k_ode / N_k_fine / N_tau defaults.
     """
     print("Setting up perturbation grid...")
     pgrid = setup_perturbation_grid(bg, thermo)
     tau0 = bg['tau0']
     tau_star = thermo['tau_star']
 
-    # --- Build grids ---
-    k_arr = k_grid(N=400, mode="ode", bg=bg, thermo=thermo, params=params)
+    # --- Build grids (use provided arrays or construct defaults) ---
+    if k_arr is None:
+        k_arr = k_grid(N=N_k_ode, mode="ode", bg=bg, thermo=thermo, params=params)
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
-    k_fine = k_grid(N=4000, mode="cl", bg=bg, thermo=thermo, params=params, k_min=k_arr[0], k_max=k_arr[-1])
-    tau_out = tau_grid(N=2000, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
+    if k_fine is None:
+        k_fine = k_grid(N=N_k_fine, mode="cl", bg=bg, thermo=thermo, params=params, k_min=k_arr[0], k_max=k_arr[-1])
+    if tau_out is None:
+        tau_out = tau_grid(N=N_tau, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
 
