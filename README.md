@@ -5,7 +5,7 @@
 # nanoCMB
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.8+-green.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.10+-green.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
 
 **A minimal CMB angular power spectrum calculator in ~1400 lines of Python.**
 
