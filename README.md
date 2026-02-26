@@ -13,6 +13,8 @@ Designed for students learning CMB theory, researchers prototyping new physics, 
 
 Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, RECFAST recombination, Boltzmann hierarchy in synchronous gauge, line-of-sight integration with precomputed Bessel tables, and optimally constructed non-uniform grids. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy.
 
+Contributions welcome — whether it's improving speed, accuracy, conciseness, or adding new physics. **Pull requests encouraged!**
+
 </div>
 
 * [Quick start](#quick-start)
