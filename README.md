@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="400" alt="nanoCMB" src="nanocmb.png">
+<img width="400" alt="nanoCMB" src="assets/nanocmb.png">
 
 # nanoCMB
 
@@ -24,11 +24,11 @@ Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmolo
 
 ## Spectra
 
-![TT Power Spectrum](tt_spectrum.png)
+![TT Power Spectrum](assets/tt_spectrum.png)
 
-![EE Power Spectrum](ee_spectrum.png)
+![EE Power Spectrum](assets/ee_spectrum.png)
 
-![TE Power Spectrum](te_spectrum.png)
+![TE Power Spectrum](assets/te_spectrum.png)
 
 ## Quick start
 
