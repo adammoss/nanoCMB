@@ -1130,6 +1130,7 @@ def _build_bessel_tables(ells_compute, x_max, dx):
         _bessel_cache[cache_key] = result
         return result
 
+    print("Building Bessel tables (first run only, will be cached)...")
     n_x = int(np.ceil(x_max_cache / dx)) + 2
     x_tab = np.linspace(0.0, dx * (n_x - 1), n_x)
     x_safe = np.where(x_tab > 1e-30, x_tab, 1.0)

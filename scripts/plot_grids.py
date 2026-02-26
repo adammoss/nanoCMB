@@ -1,5 +1,9 @@
 """Generate k-grid density plot and convergence comparison for the paper."""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import multiprocessing
 import matplotlib

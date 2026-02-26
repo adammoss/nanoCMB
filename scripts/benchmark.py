@@ -1,5 +1,9 @@
 """Benchmark nanoCMB accuracy across a Latin hypercube of cosmologies."""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import time
 import camb

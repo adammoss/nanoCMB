@@ -1,5 +1,9 @@
 """Compare nanoCMB output against CAMB and generate validation plots."""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import camb
 import os

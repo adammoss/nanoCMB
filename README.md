@@ -36,7 +36,7 @@ Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmolo
 python nanocmb.py
 ```
 
-Runs in ~30s on a modern multi-core machine (~10s with optional Numba JIT). The calculation uses thread-parallel LOS integration and multiprocess ODE evolution.
+Runs in ~30s on a modern multi-core machine (~10s with optional Numba JIT). The first run takes longer as it builds and caches spherical Bessel function tables; subsequent runs reuse the cache.
 
 Output is saved to `nanocmb_output.npz` with arrays `ells`, `DlTT`, `DlEE`, `DlTE` (D_l in muK^2).
 
@@ -46,7 +46,7 @@ Compare against CAMB and generate plots:
 
 ```bash
 pip install camb matplotlib
-python validate.py
+python scripts/validate.py
 ```
 
 This produces comparison plots in `plots/` with residual panels.
