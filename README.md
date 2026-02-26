@@ -1,8 +1,26 @@
+<div align="center">
+
+<img width="400" alt="nanoCMB" src="nanocmb.png">
+
 # nanoCMB
 
-A minimal CMB angular power spectrum calculator in ~1400 lines of Python.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8+-green.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
+
+**A minimal CMB angular power spectrum calculator in ~1400 lines of Python.**
 
 Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, RECFAST recombination, Boltzmann hierarchy in synchronous gauge, line-of-sight integration with precomputed Bessel tables, and optimally constructed non-uniform grids. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy.
+
+</div>
+
+* [Quick start](#quick-start)
+* [Validation](#validation)
+* [Accuracy](#accuracy)
+* [What's inside](#whats-inside)
+* [Approximations](#approximations)
+* [Dependencies](#dependencies)
+* [Contributing](#contributing)
+* [Citation](#citation)
 
 ## Spectra
 
