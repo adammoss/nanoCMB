@@ -1,8 +1,6 @@
 <div align="center">
-
 <img width="400" alt="nanoCMB" src="assets/nanocmb.png">
-
-# nanoCMB
+<h1>nanoCMB</h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-green.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -11,10 +9,9 @@
 
 Designed for students learning CMB theory, researchers prototyping new physics, or anyone who wants to understand what a Boltzmann solver actually does. The entire calculation lives in a single readable Python file.
 
-Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, RECFAST recombination, Boltzmann hierarchy in synchronous gauge, line-of-sight integration with precomputed Bessel tables, and optimally constructed non-uniform grids. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy.
+Computes the unlensed TT, EE, and TE angular power spectra for flat LCDM cosmologies from first principles: Friedmann equation, RECFAST recombination, Boltzmann hierarchy in synchronous gauge, line-of-sight integration with precomputed Bessel tables, and optimally constructed non-uniform grids. Matches [CAMB](https://github.com/cmbant/CAMB) to sub-percent accuracy on the unlensed spectra. Since lensing is not included, the output should not be compared directly to observed CMB data.
 
 Contributions welcome — whether it's improving speed, accuracy, conciseness, or adding new physics. **Pull requests encouraged!**
-
 </div>
 
 * [Quick start](#quick-start)
@@ -98,7 +95,17 @@ That's it. CAMB and matplotlib are only needed for `validate.py`.
 
 ## Default parameters
 
-Planck 2018 best-fit LCDM: H0 = 67.36, omega_b h^2 = 0.02237, omega_c h^2 = 0.1200, tau = 0.0544, n_s = 0.9649, A_s = 2.1e-9, N_eff = 3.044.
+Planck 2018 best-fit flat LCDM:
+
+| Parameter | Symbol | Value |
+|-----------|:------:|------:|
+| Hubble parameter | H0 | 67.36 km/s/Mpc |
+| Baryon density | omega_b h^2 | 0.02237 |
+| CDM density | omega_c h^2 | 0.1200 |
+| Optical depth | tau | 0.0544 |
+| Scalar spectral index | n_s | 0.9649 |
+| Scalar amplitude | A_s | 2.1e-9 |
+| Effective neutrino number | N_eff | 3.044 |
 
 ## Contributing
 
