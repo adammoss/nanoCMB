@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1k lines of readable Python.
+in ~1400 lines of readable Python.
 
 Features:
   - Full RECFAST recombination (H + He ODEs, matter temperature)
