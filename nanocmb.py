@@ -600,18 +600,18 @@ def compute_thermodynamics(bg, params):
 # ============================================================
 
 # Hierarchy truncation (increase for higher ℓ_max accuracy)
-LMAXG = 15       # photon temperature: Θ₀ ... Θ_LMAXG
+LMAXG = 15       # photon brightness: F_gamma0 ... F_gamma_LMAXG
 LMAXPOL = 15     # photon polarisation: E₂ ... E_LMAXPOL
-LMAXNR = 15      # massless neutrinos: N₀ ... N_LMAXNR
+LMAXNR = 15      # massless-neutrino brightness: F_nu0 ... F_nu_LMAXNR
 
 # State vector layout (flat arrays for scipy ODE solver)
 IX_ETAK = 0
 IX_CLXC = 1
 IX_CLXB = 2
 IX_VB = 3
-IX_G = 4                                    # Θ₀ at IX_G, Θ₁ at IX_G+1, etc.
+IX_G = 4                                    # F_gamma0 at IX_G, F_gamma1 at IX_G+1, etc.
 IX_POL = IX_G + LMAXG + 1                   # E₂ at IX_POL, E₃ at IX_POL+1, etc.
-IX_R = IX_POL + LMAXPOL - 1                 # N₀ at IX_R, N₁ at IX_R+1, etc.
+IX_R = IX_POL + LMAXPOL - 1                 # F_nu0 at IX_R, F_nu1 at IX_R+1, etc.
 NVAR = IX_R + LMAXNR + 1
 
 
@@ -725,7 +725,7 @@ def adiabatic_ics(k, tau_start, bg, pgrid):
     y0[IX_R + 1] = (4 * Rv + 23) / Rp15 * x2 * x / 27.0      # q_ν
     y0[IX_R + 2] = -4.0 / 3.0 * x2 / Rp15 * (1.0 + omtau / 4.0 * (4*Rv - 5) / (2*Rv + 15))  # π_ν
     if LMAXNR >= 3:
-        y0[IX_R + 3] = -4.0 / 21.0 / Rp15 * x2 * x           # N₃
+        y0[IX_R + 3] = -4.0 / 21.0 / Rp15 * x2 * x           # F_nu3
 
     # All higher multipoles and polarisation start at zero
     return y0
@@ -758,11 +758,11 @@ def _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c):
     k2 = k * k
     dgrho = grhob_t * clxb + grhoc_t * clxc + grhog_t * clxg + grhor_t * clxr
     dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
-    z = (0.5 * dgrho / k + etak) / adotoa
-    sigma = z + 1.5 * dgq / k2
+    Z = (0.5 * dgrho / k + etak) / adotoa
+    sigma = Z + 1.5 * dgq / k2
 
     return (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
-            dgrho, dgq, z, sigma,
+            dgrho, dgq, Z, sigma,
             etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir)
 
 
@@ -776,7 +776,7 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
     """
     # Background and Einstein-source terms
     (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
-     dgrho, dgq, z, sigma,
+     dgrho, dgq, Z, sigma,
      etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir) = \
         _common_terms(tau, y, k, bg_vec, sp_a_x, sp_a_c)
     opacity = max(_cubic_eval(sp_op_x, sp_op_c, tau), 1e-30)
@@ -798,10 +798,10 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
     dy[IX_ETAK] = 0.5 * dgq
 
     # --- CDM: at rest in this gauge ---
-    dy[IX_CLXC] = -k * z
+    dy[IX_CLXC] = -k * Z
 
     # --- Baryons ---
-    dy[IX_CLXB] = -k * (z + vb)
+    dy[IX_CLXB] = -k * (Z + vb)
 
     if tight_coupling:
         # Tight-coupling: photon-baryon fluid locked together
@@ -811,7 +811,7 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
         vbdot = (-adotoa * vb + k * delta_p_b + k / 4.0 * pb43 * (clxg - 2.0 * pig_tc)) / (1.0 + pb43)
         dy[IX_VB] = vbdot
 
-        dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
+        dy[IX_G] = -k * (4.0 / 3.0 * Z + qg)
         qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb + k * delta_p_b) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig_tc
         dy[IX_G + 1] = qgdot
         dy[IX_G + 2] = opacity * (pig_tc - pig)
@@ -826,12 +826,12 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
         vbdot = -adotoa * vb + k * delta_p_b - photbar * opacity * (4.0 / 3.0 * vb - qg)
         dy[IX_VB] = vbdot
 
-        dy[IX_G] = -k * (4.0 / 3.0 * z + qg)
+        dy[IX_G] = -k * (4.0 / 3.0 * Z + qg)
         qgdot = 4.0 / 3.0 * (-vbdot - adotoa * vb + k * delta_p_b) / pb43 + k / 3.0 * clxg - 2.0 * k / 3.0 * pig
         dy[IX_G + 1] = qgdot
 
-        Theta3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
-        dy[IX_G + 2] = (2.0 * k / 5.0 * qg - 3.0 * k / 5.0 * Theta3
+        Fgamma3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
+        dy[IX_G + 2] = (2.0 * k / 5.0 * qg - 3.0 * k / 5.0 * Fgamma3
                         - opacity * (pig - polter) + 8.0 / 15.0 * k * sigma)
 
         for l in range(3, LMAXG):
@@ -861,11 +861,11 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
                         - (LMAXPOL + 3) * cothxor * y[idx_last])
 
     # --- Massless neutrinos ---
-    dy[IX_R] = -k * (4.0 / 3.0 * z + qr)
+    dy[IX_R] = -k * (4.0 / 3.0 * Z + qr)
     dy[IX_R + 1] = k / 3.0 * (clxr - 2.0 * pir)
 
-    N3 = y[IX_R + 3] if LMAXNR >= 3 else 0.0
-    dy[IX_R + 2] = 2.0 * k / 5.0 * qr - 3.0 * k / 5.0 * N3 + 8.0 / 15.0 * k * sigma
+    Fnu3 = y[IX_R + 3] if LMAXNR >= 3 else 0.0
+    dy[IX_R + 2] = 2.0 * k / 5.0 * qr - 3.0 * k / 5.0 * Fnu3 + 8.0 / 15.0 * k * sigma
 
     for l in range(3, LMAXNR):
         dy[IX_R + l] = (k * l / (2*l + 1) * y[IX_R + l - 1]
@@ -886,7 +886,7 @@ def compute_source_functions(tau, y, k, pgrid, thermo):
     the E-mode source.
     """
     (a, adotoa, grhog_t, grhor_t, grhoc_t, grhob_t,
-     dgrho, dgq, z, sigma,
+     dgrho, dgq, Z, sigma,
      etak, clxc, clxb, vb, clxg, qg, pig, clxr, qr, pir) = _common_terms(
         tau, y, k, pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c']
     )
@@ -901,10 +901,10 @@ def compute_source_functions(tau, y, k, pgrid, thermo):
     # Φ̇ for the ISW effect — compute pigdot, pirdot directly from the
     # Boltzmann hierarchy equations (avoids re-evaluating full RHS)
     polter = pig / 10.0 + 9.0 / 15.0 * E2
-    Theta3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
-    N3 = y[IX_R + 3] if LMAXNR >= 3 else 0.0
-    pigdot = (2*k/5*qg - 3*k/5*Theta3 - opacity*(pig - polter) + 8*k*sigma/15)
-    pirdot = (2*k/5*qr - 3*k/5*N3 + 8*k*sigma/15)
+    Fgamma3 = y[IX_G + 3] if LMAXG >= 3 else 0.0
+    Fnu3 = y[IX_R + 3] if LMAXNR >= 3 else 0.0
+    pigdot = (2*k/5*qg - 3*k/5*Fgamma3 - opacity*(pig - polter) + 8*k*sigma/15)
+    pirdot = (2*k/5*qr - 3*k/5*Fnu3 + 8*k*sigma/15)
     pidot_sum = grhog_t * pigdot + grhor_t * pirdot
     diff_rhopi = pidot_sum - 4.0 * adotoa * dgpi
     gpres_plus_grho = (4.0 / 3.0) * (grhog_t + grhor_t) + grhoc_t + grhob_t
