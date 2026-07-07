@@ -26,6 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     from numba import njit
+    # cache=True is unsafe here: spawned pool workers compile as __mp_main__
+    # and poison the on-disk cache for later `import nanocmb`.
     _jit = njit(cache=False)
 except ImportError:
     _jit = lambda f: f
@@ -433,6 +435,8 @@ def compute_recombination(bg, params):
             t_eval=z_ode, method='Radau', rtol=1e-6, atol=1e-10,
             max_step=5.0,
         )
+        if not sol.success:
+            raise RuntimeError(f"RECFAST ODE solver failed: {sol.message}")
         n_sol = min(sol.y.shape[1], len(z_arr) - he_ode_idx)
         idx = he_ode_idx + n_sol
         xH_arr[he_ode_idx:idx] = sol.y[0, :n_sol]
@@ -1014,10 +1018,10 @@ def k_grid(N, mode, bg, thermo, params,
     # Shared quantities
     primordial = k ** (params['n_s'] + 2)
     acoustic_curv = (1.0 / thermo['r_s']) ** 2
+    # Silk damping envelope: exp(-(k/k_D)^2)
+    damped = primordial * np.exp(-((k / thermo['k_D']) ** 2))
 
     if mode == "cl":
-        # Source-level damping: exp(-(k/k_D)^2)
-        damped = primordial * np.exp(-1.0 * (k / thermo['k_D']) ** 2)
         sigma_k = 1.0 / thermo['delta_tau_rec']
         chi_star = bg['tau0'] - thermo['tau_star']
         ells = np.unique(np.geomspace(ell_min, ell_max, n_ell_samples).astype(int))
@@ -1028,8 +1032,6 @@ def k_grid(N, mode, bg, thermo, params,
             raw_weight += curv * damped
         floor = 1e-6 * np.max(raw_weight)
     else:
-        # Source function damping: exp(-(k/k_D)^2) — single power, not squared
-        damped = primordial * np.exp(-1.0 * (k / thermo['k_D']) ** 2)
         smooth_curv = (k * thermo['r_s']) ** 2 / bg['tau_eq'] ** 2
         raw_weight = np.maximum(acoustic_curv, smooth_curv) * damped
         floor = 0.005 * np.max(raw_weight)
@@ -1215,17 +1217,25 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     print("Evolving perturbations...")
     _args = (bg, thermo, pgrid, tau_out)
 
-    # Warmup JIT (no-op without numba) before forking workers
+    # Warmup JIT (no-op without numba) before starting workers: fork-based
+    # platforms inherit the compiled code (spawn workers recompile once each).
     _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
                    pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c'],
                    pgrid['sp_op_x'], pgrid['sp_op_c'],
                    pgrid['sp_cs_x'], pgrid['sp_cs_c'])
 
     try:
-        from multiprocessing import Pool, cpu_count
-        ncpu = cpu_count()
-        with Pool(ncpu, initializer=_pool_init, initargs=_args) as pool:
-            results = pool.map(_pool_solve_k, k_arr)
+        import multiprocessing as mp, os, sys
+        # With the spawn start method (macOS/Windows default), workers
+        # re-import __main__; if it isn't a real file (REPL, stdin) they
+        # crash and pool.map hangs forever — use the serial path instead.
+        main_file = getattr(sys.modules['__main__'], '__file__', '')
+        if mp.get_start_method() == 'spawn' and not (main_file and os.path.exists(main_file)):
+            raise OSError("spawn requires an importable __main__ module")
+        # chunksize=1: k_arr is sorted and high-k modes are slowest, so
+        # larger chunks would leave one worker holding the expensive tail.
+        with mp.Pool(mp.cpu_count(), initializer=_pool_init, initargs=_args) as pool:
+            results = pool.map(_pool_solve_k, k_arr, chunksize=1)
     except (ImportError, OSError):
         results = [evolve_k(k, bg, thermo, pgrid, tau_out) for k in k_arr]
 
