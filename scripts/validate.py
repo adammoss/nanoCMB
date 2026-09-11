@@ -1,8 +1,15 @@
 """Compare nanoCMB output against CAMB and generate validation plots."""
 
+import argparse
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--update-assets', action='store_true',
+                    help='Also save TT, EE, and TE figures to the README assets directory.')
+args = parser.parse_args()
 
 import numpy as np
 import camb
@@ -87,6 +94,14 @@ try:
 
     os.makedirs('plots', exist_ok=True)
 
+    def save_spectrum(fig, name):
+        paths = [Path('plots') / f'{name}_spectrum.png']
+        if args.update_assets:
+            paths.append(ROOT / 'assets' / f'{name}_spectrum.png')
+        for path in paths:
+            fig.savefig(path, dpi=150)
+            print(f"Saved {path}")
+
     # Interpolate CAMB to nanoCMB ℓ values
     TT_camb_interp = np.interp(ells_nano, ells_camb, DlTT_camb)
     EE_camb_interp = np.interp(ells_nano, ells_camb, DlEE_camb)
@@ -101,7 +116,7 @@ try:
     ax_top.set_title('TT Power Spectrum')
     ax_top.legend()
     ax_top.set_xlim(2, 2500)
-    mask_pos = TT_camb_interp > 10
+    mask_pos = TT_camb_interp > 0
     residual = DlTT_nano[mask_pos] / TT_camb_interp[mask_pos] - 1
     ax_bot.plot(ells_nano[mask_pos], residual * 100, 'r-', alpha=0.6, lw=0.8)
     ax_bot.axhline(0, color='k', ls='--', lw=0.5)
@@ -111,9 +126,8 @@ try:
     ax_bot.set_ylim(-3, 3)
     ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
-    fig.savefig('plots/tt_spectrum.png', dpi=150)
+    save_spectrum(fig, 'tt')
     plt.close(fig)
-    print("Saved plots/tt_spectrum.png")
 
     # --- EE spectrum + residual ---
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(8, 6),
@@ -124,7 +138,7 @@ try:
     ax_top.set_title('EE Power Spectrum')
     ax_top.legend()
     ax_top.set_xlim(2, 2500)
-    mask_pos = EE_camb_interp > 0.1
+    mask_pos = EE_camb_interp > 0
     residual = DlEE_nano[mask_pos] / EE_camb_interp[mask_pos] - 1
     ax_bot.plot(ells_nano[mask_pos], residual * 100, 'b-', alpha=0.6, lw=0.8)
     ax_bot.axhline(0, color='k', ls='--', lw=0.5)
@@ -134,9 +148,8 @@ try:
     ax_bot.set_ylim(-3, 3)
     ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
-    fig.savefig('plots/ee_spectrum.png', dpi=150)
+    save_spectrum(fig, 'ee')
     plt.close(fig)
-    print("Saved plots/ee_spectrum.png")
 
     # --- TE spectrum + residual ---
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(8, 6),
@@ -148,19 +161,20 @@ try:
     ax_top.set_title('TE Power Spectrum')
     ax_top.legend()
     ax_top.set_xlim(2, 2500)
-    mask_pos = np.abs(TE_camb_interp) > 5
-    residual = DlTE_nano[mask_pos] / TE_camb_interp[mask_pos] - 1
+    # Match the README metric and retain samples at TE zero crossings.
+    covariance_scale = np.sqrt(TT_camb_interp * EE_camb_interp)
+    mask_pos = covariance_scale > 0
+    residual = (DlTE_nano[mask_pos] - TE_camb_interp[mask_pos]) / covariance_scale[mask_pos]
     ax_bot.plot(ells_nano[mask_pos], residual * 100, 'g-', alpha=0.6, lw=0.8)
     ax_bot.axhline(0, color='k', ls='--', lw=0.5)
     ax_bot.axhspan(-1, 1, alpha=0.1, color='blue', label=r'$\pm$1%')
     ax_bot.set_xlabel(r'Multipole $\ell$')
-    ax_bot.set_ylabel('Residual [%]')
+    ax_bot.set_ylabel('Normalized\nresidual [%]')
     ax_bot.set_ylim(-3, 3)
     ax_bot.legend(loc='upper left', fontsize=8)
     fig.tight_layout()
-    fig.savefig('plots/te_spectrum.png', dpi=150)
+    save_spectrum(fig, 'te')
     plt.close(fig)
-    print("Saved plots/te_spectrum.png")
 
     # --- Background checks ---
     from nanocmb import compute_background, hubble, conformal_time, compute_thermodynamics, c_km_s, params

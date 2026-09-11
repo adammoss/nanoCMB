@@ -31,6 +31,8 @@ Contributions welcome — whether it's improving speed, accuracy, conciseness, o
 
 ![TE Power Spectrum](assets/te_spectrum.png)
 
+TE residuals use the covariance normalization described in [Accuracy](#accuracy).
+
 ## Quick start
 
 ```bash
@@ -57,6 +59,13 @@ python scripts/validate.py
 ```
 
 This produces comparison plots in `plots/` with residual panels.
+
+To regenerate the tracked spectrum figures embedded in this README:
+
+```bash
+python nanocmb.py
+python scripts/validate.py --update-assets
+```
 
 Run the numerical regression tests with:
 
