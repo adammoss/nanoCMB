@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-green.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
 
-**A minimal CMB angular power spectrum calculator in ~1400 lines of Python.**
+**A minimal CMB angular power spectrum calculator in ~1600 lines of Python.**
 
 Designed for students learning CMB theory, researchers prototyping new physics, or anyone who wants to understand what a Boltzmann solver actually does. The entire calculation lives in a single readable Python file.
 
@@ -37,9 +37,15 @@ Contributions welcome — whether it's improving speed, accuracy, conciseness, o
 python nanocmb.py
 ```
 
-Runs in ~30s on a modern multi-core machine (~10s with optional Numba JIT). The first run takes longer as it builds and caches spherical Bessel function tables; subsequent runs reuse the cache.
+The default calculation takes about 7s with optional Numba JIT and warm caches on the benchmark machine; runtime depends on hardware. The first run takes longer as it compiles the numerical kernels and builds spherical Bessel function tables. Subsequent runs reuse the Bessel cache.
+
+Against the previous implementation (`8c6191a`), median compute time fell from **10.51s to 7.08s (33% less time)** over three warm runs per version, using the default grids through l=2500. The timer includes background, thermodynamics, and spectrum calculation. This comparison used 12 logical CPUs, Python 3.12.12, NumPy 2.3.5, SciPy 1.17.0, and Numba 0.63.1.
 
 Output is saved to `nanocmb_output.npz` with arrays `ells`, `DlTT`, `DlEE`, `DlTE` (D_l in muK^2).
+
+For notebooks, `compute_cls(..., n_workers=1)` runs the ODEs serially. Script callers using multiple processes should put the calculation under `if __name__ == '__main__':`. The solver automatically falls back to serial execution for stdin/REPL entry points that spawned workers cannot import.
+
+`compute_cls` also exposes `los_workers`, `ell_step`, `ells_compute`, `bessel_dx`, and `ode_rtol`/`ode_atol`/`ode_max_step` for numerical checks. Rebuild the background and thermodynamics dictionaries after changing cosmological parameters.
 
 ## Validation
 
@@ -52,18 +58,26 @@ python scripts/validate.py
 
 This produces comparison plots in `plots/` with residual panels.
 
+Run the numerical regression tests with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Accuracy
 
 Validated against CAMB (AccuracyBoost=3) with Planck 2018 best-fit parameters:
 
 | l range | TT (mean ratio) | TT (std) | EE (mean ratio) | EE (std) |
 |---------|:---:|:---:|:---:|:---:|
-| 2-29 | 0.9993 | 0.08% | 1.0013 | 0.99% |
-| 30-499 | 0.9996 | 0.09% | 1.0005 | 0.22% |
-| 500-1999 | 0.9998 | 0.08% | 1.0003 | 0.13% |
-| 2000-2500 | 0.9982 | 0.05% | 0.9986 | 0.20% |
+| 2-29 | 0.9994 | 0.02% | 1.0003 | 0.21% |
+| 30-499 | 0.9994 | 0.06% | 1.0000 | 0.14% |
+| 500-1999 | 0.9996 | 0.06% | 0.9998 | 0.05% |
+| 2000-2500 | 0.9985 | 0.04% | 0.9988 | 0.06% |
 
-A multi-cosmology benchmark across 50 flat LCDM cosmologies (spanning +/-3 sigma of the Planck 2018 posterior) confirms sub-percent accuracy across the full range, with median TT RMS residuals of ~0.1%.
+Over l=2–2500, default-cosmology RMS residuals are 0.096% TT, 0.098% EE, and 0.052% TE. TE residuals are normalized by sqrt(TT_CAMB * EE_CAMB), avoiding divisions at TE zero crossings.
+
+The updated solver was checked at the default cosmology, six Latin-hypercube cosmologies spanning +/-3 sigma of the Planck 2018 posterior, and a zero-reionization case. Across these eight cases, the largest absolute TT and EE residuals were 0.30% and 0.81%, respectively. The calculation uses massless neutrinos and matched unlensed CAMB spectra; these checks do not establish accuracy outside the tested parameter range.
 
 ## What's inside
 
@@ -89,7 +103,7 @@ The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom pipe
 
 - numpy
 - scipy
-- numba (optional, for ~3x speedup)
+- numba (optional; accelerates the perturbation and line-of-sight kernels)
 
 That's it. CAMB and matplotlib are only needed for `validate.py`.
 

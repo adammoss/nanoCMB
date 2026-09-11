@@ -2,7 +2,7 @@
 nanoCMB — A minimal CMB angular power spectrum calculator
 
 Computes TT, EE, and TE angular power spectra for flat ΛCDM cosmologies
-in ~1400 lines of readable Python.
+in ~1600 lines of readable Python.
 
 Features:
   - Full RECFAST recombination (H + He ODEs, matter temperature)
@@ -23,14 +23,16 @@ Units: distances in Mpc, time in Mpc (c = 1), H in Mpc⁻¹, k in Mpc⁻¹,
 import numpy as np
 from scipy import integrate, interpolate, optimize, special
 from concurrent.futures import ThreadPoolExecutor
+import os
 
 try:
     from numba import njit
-    # cache=True is unsafe here: spawned pool workers compile as __mp_main__
-    # and poison the on-disk cache for later `import nanocmb`.
-    _jit = njit(cache=False)
+    # Disable disk caching: spawned workers compile as __mp_main__.
+    _jit = njit(cache=False, nogil=True)
+    NUMBA_AVAILABLE = True
 except ImportError:
     _jit = lambda f: f
+    NUMBA_AVAILABLE = False
 
 # ============================================================
 # PHYSICAL CONSTANTS
@@ -51,7 +53,7 @@ sigma_SB = 5.670374419e-8           # Stefan-Boltzmann constant (W/m²/K⁴)
 
 # ============================================================
 # PARAMETERS
-# Default: Planck 2018 best-fit ΛCDM
+# Default: Planck-like parameters, with ALL neutrinos massless
 # ============================================================
 
 params = {
@@ -73,6 +75,7 @@ params = {
 # BACKGROUND COSMOLOGY
 # Integrate the Friedmann equation to get H(a), η(a), χ(z)
 # ============================================================
+
 
 def setup_background(params):
     """Precompute background density parameters from cosmological parameters.
@@ -135,11 +138,28 @@ def hubble(a, bg):
 
 
 def conformal_time(a, bg):
-    """Conformal time η(a) = ∫₀ᵃ da'/(a'²H) in Mpc."""
-    a = np.atleast_1d(a)
-    result = np.array([integrate.quad(dtauda, 0, ai, args=(bg,), limit=100, epsrel=1e-8)[0]
-                       for ai in a])
-    return result.squeeze()
+    """η(a) in Mpc, using a cached antiderivative of dη/da on 0 <= a <= 1.
+
+    A single smooth background table replaces thousands of separate quadratures.
+    The a=0 endpoint is explicit, so every subsystem uses the same time origin.
+    Rebuild the background dictionary after changing cosmological parameters.
+    """
+    values = np.asarray(a, dtype=float)
+    if np.any(~np.isfinite(values)) or np.any(values < 0):
+        raise ValueError("Scale factors must be finite and non-negative")
+    if '_eta_primitive' not in bg:
+        knots = np.r_[0.0, np.geomspace(1e-12, 1.0, 10000)]
+        bg['_eta_primitive'] = interpolate.CubicSpline(
+            knots, dtauda(knots, bg), extrapolate=False).antiderivative()
+    # Retain the original API for future scale factors, without extrapolating.
+    flat = values.ravel()
+    result = np.empty_like(flat)
+    inside = flat <= 1.0
+    result[inside] = bg['_eta_primitive'](flat[inside])
+    for index in np.flatnonzero(~inside):
+        result[index] = integrate.quad(dtauda, 0, flat[index], args=(bg,),
+                                       epsrel=1e-10, limit=200)[0]
+    return result.reshape(values.shape).squeeze()
 
 
 def sound_horizon(a, bg):
@@ -250,15 +270,18 @@ def compute_recombination(bg, params):
         """He++ → He+ Saha: returns total x_e per H atom."""
         T = T_cmb * (1 + z)
         rhs = (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1_He2 / T) / Nnow
-        return 0.5 * (np.sqrt((rhs - 1 - f_He)**2
-                              + 4 * (1 + 2 * f_He) * rhs) - (rhs - 1 - f_He))
+        b = rhs - 1.0 - f_He
+        c = (1.0 + 2.0 * f_He) * rhs
+        root = np.hypot(b, 2.0 * np.sqrt(c))
+        return 2.0 * c / (root + b) if b >= 0 else 0.5 * (root - b)
 
     def saha_He1(z):
         """He+ → He0 Saha: returns x_He = n(He+)/n_He."""
         T = T_cmb * (1 + z)
         rhs = 4.0 * (CR * T_cmb / (1 + z))**1.5 * np.exp(-CB1_He1 / T) / Nnow
-        x0 = 0.5 * (np.sqrt((rhs - 1)**2 + 4 * (1 + f_He) * rhs) - (rhs - 1))
-        return min((x0 - 1.0) / f_He, 1.0)
+        # Solve directly for x_He, avoiding cancellation in both square-root
+        # subtraction and (x_e - 1)/f_He.
+        return 2.0 * rhs / (1.0 + rhs + np.hypot(1.0 + rhs, 2.0 * np.sqrt(f_He * rhs)))
 
     # --- RECFAST ODE right-hand side ---
     def recfast_rhs(z, y):
@@ -435,13 +458,11 @@ def compute_recombination(bg, params):
             t_eval=z_ode, method='Radau', rtol=1e-6, atol=1e-10,
             max_step=5.0,
         )
-        if not sol.success:
-            raise RuntimeError(f"RECFAST ODE solver failed: {sol.message}")
-        n_sol = min(sol.y.shape[1], len(z_arr) - he_ode_idx)
-        idx = he_ode_idx + n_sol
-        xH_arr[he_ode_idx:idx] = sol.y[0, :n_sol]
-        xHe_arr[he_ode_idx:idx] = sol.y[1, :n_sol]
-        Tmat_arr[he_ode_idx:idx] = sol.y[2, :n_sol]
+        if not sol.success or sol.y.shape != (3, len(z_ode)) or not np.all(np.isfinite(sol.y)):
+            raise RuntimeError(f"RECFAST integration incomplete: {sol.message}")
+        xH_arr[he_ode_idx:] = sol.y[0]
+        xHe_arr[he_ode_idx:] = sol.y[1]
+        Tmat_arr[he_ode_idx:] = sol.y[2]
 
     # For the recombination phase, x_e = x_H + f_He * x_He.
     xe_total[he_ode_idx:] = xH_arr[he_ode_idx:] + f_He * xHe_arr[he_ode_idx:]
@@ -471,6 +492,8 @@ def compute_thermodynamics(bg, params):
 
     def build_reion_xe(z_eval, z_re):
         """Pure reionisation model x_e(z): H tanh + second He reion."""
+        if params['tau_reion'] == 0:
+            return np.interp(z_eval, z_rev, xe_rev)
         z_reion_start = z_re + 8 * delta_z
         x_e_freeze = np.interp(z_reion_start, z_rev, xe_rev)
         window_var_mid = (1 + z_re)**1.5
@@ -491,14 +514,20 @@ def compute_thermodynamics(bg, params):
 
     # Solve for z_re matching target τ_reion.
     target_tau = params['tau_reion']
-    z_re_low, z_re_high = 2.0, 30.0
+    if target_tau < 0 or not np.isfinite(target_tau):
+        raise ValueError("tau_reion must be finite and non-negative")
+    z_re_low, z_re_high = 0.0, 30.0
     def tau_residual(z_re):
         return compute_reion_optical_depth(z_re) - target_tau
-    f_low = tau_residual(z_re_low)
-    f_high = tau_residual(z_re_high)
-    if f_low * f_high > 0:
-        raise RuntimeError("tau_reion root not bracketed in z_re range [2, 30].")
-    z_re = optimize.brentq(tau_residual, z_re_low, z_re_high, xtol=1e-8, rtol=1e-8)
+    if target_tau == 0:
+        z_re = 0.0
+    else:
+        f_low, f_high = tau_residual(z_re_low), tau_residual(z_re_high)
+        if f_low * f_high > 0:
+            raise ValueError("tau_reion is outside the tanh model's supported range "
+                             f"[{f_low + target_tau:.6g}, {f_high + target_tau:.6g}]; "
+                             "use tau_reion=0 to disable reionisation")
+        z_re = optimize.brentq(tau_residual, z_re_low, z_re_high, xtol=1e-8, rtol=1e-8)
 
     # Refine z_arr in the reionisation region
     z_reion_lo = max(0.01, z_re - 8 * delta_z)
@@ -544,12 +573,14 @@ def compute_thermodynamics(bg, params):
         'exptau': exptau,            # e^{-τ}
         'visibility': visibility,     # g(η) = κ̇ e^{-τ}
         'z_reion': z_re,
+        'reionization': target_tau > 0,
     }
 
-    # Cubic spline interpolators for key quantities
-    thermo['opacity_interp'] = interpolate.CubicSpline(tau_arr, opacity)
-    thermo['exptau_interp'] = interpolate.CubicSpline(tau_arr, exptau)
-    thermo['visibility_interp'] = interpolate.CubicSpline(tau_arr, visibility)
+    # Shape-preserving cubics avoid overshoots within the thermodynamics table.
+    with np.errstate(over='ignore'):  # harmless reciprocal overflow for subnormal e^-τ
+        thermo['opacity_interp'] = interpolate.PchipInterpolator(tau_arr, opacity)
+        thermo['exptau_interp'] = interpolate.PchipInterpolator(tau_arr, exptau)
+        thermo['visibility_interp'] = interpolate.PchipInterpolator(tau_arr, visibility)
 
     # Baryon sound speed from thermodynamics (CAMB-style structure).
     # c_s,b^2 = (k_B T_m / m_H c^2) * [1 - (d ln T_m / d ln a)/3], with
@@ -622,8 +653,8 @@ NVAR = IX_R + LMAXNR + 1
 # --- Numba-accelerated helpers (fall back to plain Python without numba) ---
 
 @_jit
-def _cubic_eval(x_knots, coeffs, t):
-    """Evaluate a scipy CubicSpline at point t using binary search + Horner."""
+def _cubic_eval(x_knots, coeffs, t, derivative=False):
+    """Evaluate a cubic PPoly (CubicSpline or PCHIP), or its first derivative."""
     n = x_knots.shape[0] - 1
     lo, hi = 0, n - 1
     while lo < hi:
@@ -633,6 +664,8 @@ def _cubic_eval(x_knots, coeffs, t):
         else:
             hi = mid
     dt = t - x_knots[lo]
+    if derivative:
+        return (3.0 * coeffs[0, lo] * dt + 2.0 * coeffs[1, lo]) * dt + coeffs[2, lo]
     return ((coeffs[0, lo] * dt + coeffs[1, lo]) * dt + coeffs[2, lo]) * dt + coeffs[3, lo]
 
 
@@ -643,36 +676,35 @@ def setup_perturbation_grid(bg, thermo):
     spline interpolators covering the full range from the deep radiation era
     (a ~ 10⁻⁹) to today (a = 1).
     """
-    # Build τ(a) on a fine log-spaced grid via cumulative integration of dτ/da
+    # Reuse the thermodynamics time origin (include η(a_min), not η=0).
     a_grid = np.logspace(-9, 0, 10000)
-    dtauda_grid = np.array([dtauda(a, bg) for a in a_grid])
-    tau_grid = integrate.cumulative_trapezoid(dtauda_grid, a_grid, initial=0)
+    tau_grid = conformal_time(a_grid, bg)
 
     # a(τ) interpolator (the inverse mapping we need during integration)
     a_of_tau = interpolate.CubicSpline(tau_grid, a_grid)
 
-    # Radiation-era expansion rate: ȧ = a²H ≈ √(grho_rad/3) × a  (when a is small)
+    # Radiation era: da/dη = a²H ≈ √(grho_rad/3), a constant.
     grho_rad = bg['grhog'] + bg['grhornomass']
     adotrad = np.sqrt(grho_rad / 3.0)
 
     # Build extended interpolators covering all times.
-    # Before the thermodynamics grid (z > 1600): fully ionised, analytic values.
+    # Before the thermodynamics grid (z > 10000): fully ionised, analytic values.
     # Within the thermodynamics grid: use the computed values.
     tau_thermo = thermo['tau_arr']
     tau_early = tau_grid[tau_grid < tau_thermo[0]]
     a_early = a_of_tau(tau_early)
     tau_ext = np.concatenate([tau_early, tau_thermo])
 
-    # Opacity: κ̇ = (1+f_He) × akthom/a² at early times (fully ionised)
-    opac_early = (1.0 + bg['f_He']) * bg['akthom'] / a_early**2
-    opacity_interp = interpolate.CubicSpline(
+    # Fully ionised helium supplies TWO electrons per He nucleus.
+    opac_early = (1.0 + 2.0 * bg['f_He']) * bg['akthom'] / a_early**2
+    opacity_interp = interpolate.PchipInterpolator(
         tau_ext, np.concatenate([opac_early, thermo['opacity']]))
 
     # Baryon sound speed: c_s² = (4/3) k_B T_r / (μ m_H) at early times (T_m = T_r)
     xe_early = 1.0 + 2.0 * bg['f_He']
     barssc_early = barssc0 * (1.0 - 0.75 * bg['Y_He'] + (1.0 - bg['Y_He']) * xe_early)
     cs2_early = (4.0 / 3.0) * barssc_early * bg['T_cmb'] / a_early
-    cs2_interp = interpolate.CubicSpline(
+    cs2_interp = interpolate.PchipInterpolator(
         tau_ext, np.concatenate([cs2_early, thermo['cs2_b']]))
 
     return {
@@ -813,6 +845,17 @@ def _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x,
         polter = pig_tc / 4.0
 
         vbdot = (-adotoa * vb + k * delta_p_b + k / 4.0 * pb43 * (clxg - 2.0 * pig_tc)) / (1.0 + pb43)
+        # First-order derivative of the slip vb - 3*qg/4 (CAMB derivs()).
+        dopacity = _cubic_eval(sp_op_x, sp_op_c, tau, True)
+        gpressure = (grhog_t + grhor_t) / 3.0 - bg_vec[4] * a * a
+        addot_over_a = 0.5 * (adotoa * adotoa - gpressure)
+        clxgdot = -k * (4.0 / 3.0 * Z + qg)
+        slipdot = (-(2.0 * adotoa / (1.0 + pb43) + dopacity / opacity)
+                   * (vb - 0.75 * qg)
+                   + (-addot_over_a * vb - 0.5 * k * adotoa * clxg
+                      + k * (cs2_b * dy[IX_CLXB] - clxgdot / 4.0))
+                   / (opacity * (1.0 + pb43)))
+        vbdot += pb43 / (1.0 + pb43) * slipdot
         dy[IX_VB] = vbdot
 
         dy[IX_G] = -k * (4.0 / 3.0 * Z + qg)
@@ -950,7 +993,10 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     """
     # Starting time: kτ_start = 0.01 (safely in the super-horizon regime)
     tau_start = min(0.01 / k, tau_out[0] * 0.5)
-    tau_start = max(tau_start, 0.1)  # don't start before τ = 0.1 Mpc
+    # Stay inside the background table while keeping kη_start <= 0.01.
+    tau_start = max(tau_start, float(pgrid['sp_a_x'][0]))
+    if tau_start >= tau_out[0] or k * tau_start > 0.01 * (1 + 1e-12):
+        raise ValueError("k/tau_out requires initial conditions before the background table")
 
     # Initial conditions
     y0 = adiabatic_ics(k, tau_start, bg, pgrid)
@@ -964,19 +1010,20 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
     sp_cs_x = pgrid['sp_cs_x']
     sp_cs_c = pgrid['sp_cs_c']
 
+    rhs_args = (k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x, sp_cs_c)
     sol = integrate.solve_ivp(
-        lambda tau, y: _boltzmann_rhs(tau, y, k, bg_vec, sp_a_x, sp_a_c, sp_op_x, sp_op_c, sp_cs_x, sp_cs_c),
+        _boltzmann_rhs,
         [tau_start, tau_out[-1]],
         y0,
         t_eval=tau_out,
-        method='LSODA',
-        rtol=1e-5, atol=1e-8,
-        max_step=20.0,
+        method='LSODA', args=rhs_args,
+        rtol=pgrid.get('ode_rtol', 1e-5), atol=pgrid.get('ode_atol', 1e-8),
+        max_step=pgrid.get('ode_max_step', 20.0),
     )
 
     ntau = len(tau_out)
-    if not sol.success:
-        raise RuntimeError(f"ODE solver failed for k={k:.4e}: {sol.message}")
+    if not sol.success or sol.y.shape != (NVAR, ntau) or not np.all(np.isfinite(sol.y)):
+        raise RuntimeError(f"ODE solver failed/incomplete for k={k:.4e}: {sol.message}")
 
     # --- Extract source function building blocks at each time step ---
     ISW_arr, monopole_arr, sigma_plus_vb_arr, vis_arr, polter_arr, src_E = \
@@ -1003,6 +1050,15 @@ def evolve_k(k, bg, thermo, pgrid, tau_out):
 # Non-uniform grids in k and τ via equidistribution of
 # trapezoidal quadrature error: node density ∝ |f''|^(1/3).
 # ============================================================
+
+def _checked_grid(values, name, minimum=2):
+    values = np.ascontiguousarray(values, dtype=float)
+    if (values.ndim != 1 or len(values) < minimum
+            or not np.all(np.isfinite(values)) or np.any(values <= 0)
+            or np.any(np.diff(values) <= 0)):
+        raise ValueError(f"{name} must contain >= {minimum} finite, positive, strictly increasing points")
+    return values
+
 
 def k_grid(N, mode, bg, thermo, params,
                    k_min=1e-5, k_max=0.5,
@@ -1054,6 +1110,8 @@ def tau_grid(N, k_max, bg, thermo,
     if tau_max is None:
         tau_max = bg['tau0']
 
+    if N < 2 or int(N) != N or n_eval < 2 or not 0 < tau_min < tau_max:
+        raise ValueError("Invalid time-grid size or bounds")
     tau = np.linspace(tau_min, tau_max, n_eval)
     tau_star = thermo['tau_star']
     delta_tau_rec = thermo['delta_tau_rec']
@@ -1065,7 +1123,8 @@ def tau_grid(N, k_max, bg, thermo,
 
     # Reionization
     g_reion = np.exp(-0.5 * ((tau - thermo['tau_reion']) / thermo['delta_tau_reion']) ** 2)
-    weight += 0.3 * g_reion / thermo['delta_tau_reion'] ** 2
+    if thermo.get('reionization', True):
+        weight += 0.3 * g_reion / thermo['delta_tau_reion'] ** 2
 
     density = (weight + 0.005 * np.max(weight)) ** (1.0 / 3.0)
     dtau = tau[1] - tau[0]
@@ -1126,9 +1185,10 @@ def _build_bessel_tables(ells_compute, x_max, dx):
     cache_file = os.path.join(cache_dir, f'bessel_{cache_hash}.npz')
 
     if os.path.exists(cache_file):
-        data = np.load(cache_file)
-        result = (float(data['x0']), float(data['inv_dx']),
-                  int(data['n_x']), data['jl_tab'], data['jl1_tab'])
+        with np.load(cache_file, allow_pickle=False) as data:
+            result = (float(data['x0']), float(data['inv_dx']),
+                      int(data['n_x']), data['jl_tab'], data['jl1_tab'])
+        _bessel_cache.clear()
         _bessel_cache[cache_key] = result
         return result
 
@@ -1141,30 +1201,21 @@ def _build_bessel_tables(ells_compute, x_max, dx):
     nell = len(ells_compute)
     jl_tab = np.empty((nell, n_x))
     jl1_tab = np.empty((nell, n_x))
-    # Build a unique set of required orders: l and l+1 for every requested l.
-    l_unique = np.unique(np.concatenate([ells_compute, ells_compute + 1]))
-    n_unique = len(l_unique)
-    j_unique = np.empty((n_unique, n_x))
-    l_to_idx = {int(l): i for i, l in enumerate(l_unique)}
-
-    for iu, ell in enumerate(l_unique):
-        nu = ell + 0.5
-        # j_ell(x) is exponentially small for x < ell - O(ell^{1/3}).
-        # Skip the dead zone to avoid wasting time on zeros.
-        x_min = max(0.0, ell - 4.0 * ell**(1.0/3.0))
-        i_start = max(0, int(x_min / dx) - 1)
-        jl = np.zeros(n_x)
-        jl[i_start:] = pref[i_start:] * special.jv(nu, x_tab[i_start:])
-        # Correct small-x limits for stability of interpolation near origin.
-        if i_start == 0:
-            jl[0] = 1.0 if ell == 0 else 0.0
-        j_unique[iu, :] = jl
-
+    # Fill final tables directly, reusing adjacent orders at low multipoles.
     for i, ell in enumerate(ells_compute):
-        jl_tab[i, :] = j_unique[l_to_idx[int(ell)], :]
-        jl1_tab[i, :] = j_unique[l_to_idx[int(ell + 1)], :]
+        for order, table in ((int(ell), jl_tab), (int(ell) + 1, jl1_tab)):
+            if table is jl_tab and i > 0 and ell == ells_compute[i-1] + 1:
+                table[i] = jl1_tab[i-1]
+                continue
+            x_min = max(0.0, order - 4.0 * order**(1.0/3.0))
+            i_start = max(0, int(x_min / dx) - 1)
+            table[i, :i_start] = 0.0
+            table[i, i_start:] = pref[i_start:] * special.jv(order + 0.5, x_tab[i_start:])
+            if i_start == 0:
+                table[i, 0] = 1.0 if order == 0 else 0.0
 
     result = (x_tab[0], 1.0 / dx, n_x, jl_tab, jl1_tab)
+    _bessel_cache.clear()
     _bessel_cache[cache_key] = result
 
     # Persist to disk
@@ -1185,8 +1236,124 @@ def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
     return (1.0 - frac) * vals[idx] + frac * vals[idx + 1]
 
 
+def _akima_columns(x, y, x_new):
+    """Batched Akima with INDEPENDENT column thresholds, matching scalar SciPy.
+
+    Simply passing axis=0 to SciPy Akima uses one global slope threshold;
+    that couples tiny columns to large columns. Here each time slice keeps
+    the same threshold as a separate one-dimensional interpolation.
+    """
+    m = np.empty((len(x) + 3, y.shape[1]))
+    m[2:-2] = np.diff(y, axis=0) / np.diff(x)[:, None]
+    m[1] = 2*m[2] - m[3]
+    m[0] = 2*m[1] - m[2]
+    m[-2] = 2*m[-3] - m[-4]
+    m[-1] = 2*m[-2] - m[-3]
+    dm = np.abs(np.diff(m, axis=0))
+    f1, f2 = dm[2:], dm[:-2]
+    denominator = f1 + f2
+    slopes = 0.5 * (m[3:] + m[:-3])
+    mask = denominator > 1e-9 * np.max(denominator, axis=0, keepdims=True)
+    fraction = np.divide(f2, denominator, out=np.zeros_like(f2), where=mask)
+    candidate = m[1:-2] + fraction * (m[2:-1] - m[1:-2])
+    slopes[mask] = candidate[mask]
+    return np.ascontiguousarray(interpolate.CubicHermiteSpline(
+        x, y, slopes, axis=0, extrapolate=False)(x_new))
+
+
+def _trapezoid_weights(x):
+    """Positive weights whose dot product equals the non-uniform trapezoid rule."""
+    weights = np.empty_like(x)
+    weights[0], weights[-1] = (x[1] - x[0])/2, (x[-1] - x[-2])/2
+    weights[1:-1] = (x[2:] - x[:-2])/2
+    return weights
+
+
+@_jit
+def _small_x_bessel(ell, x):
+    """j_l, j_l', j_l'' from a regular series, including x=0 (ell >= 2)."""
+    # x^(ell-2)/(2ell+1)!! avoids dividing tiny interpolated j_l by x^2.
+    leading = x*0.0 + 1.0 / 15.0
+    for order in range(3, ell + 1):
+        leading *= x / (2.0 * order + 1.0)
+    x2 = x*x
+    a = -1.0 / (2.0 * (2.0*ell + 3.0))
+    b = -a / (4.0 * (2.0*ell + 5.0))
+    c = -b / (6.0 * (2.0*ell + 7.0))
+    j = leading*x2*(1.0 + x2*(a + x2*(b + x2*c)))
+    d = leading*x*(ell + x2*((ell+2)*a + x2*((ell+4)*b + x2*(ell+6)*c)))
+    dd = leading*(ell*(ell-1) + x2*((ell+2)*(ell+1)*a
+                   + x2*((ell+4)*(ell+3)*b + x2*(ell+6)*(ell+5)*c)))
+    return j, d, dd
+
+
+@_jit
+def _los_integrals(ell, ks, chi, weights, s0, s1, s2, se,
+                   x0, inv_dx, nx, jt, jnext):
+    """Fused projection: no k-by-time temporary arrays; no fast-math reassociation."""
+    temperature = np.zeros(len(ks))
+    polarization = np.zeros(len(ks))
+    for ik in range(len(ks)):
+        total_t, total_e = 0.0, 0.0
+        for it in range(len(chi)):
+            x = ks[ik]*chi[it]
+            if x < 0.1:
+                j, d, dd = _small_x_bessel(ell, x)
+            else:
+                u = min(max((x - x0)*inv_dx, 0.0), nx - 1.0)
+                index = min(int(u), nx - 2)
+                fraction = u - index
+                j = jt[index] + fraction*(jt[index+1] - jt[index])
+                jp = jnext[index] + fraction*(jnext[index+1] - jnext[index])
+                d = ell/x*j - jp
+                dd = -2.0/x*d + (ell*(ell+1)/(x*x) - 1.0)*j
+            total_t += weights[it]*(s0[ik,it]*j + s1[ik,it]*d + s2[ik,it]*dd)
+            total_e += weights[it]*se[ik,it]*j
+        temperature[ik], polarization[ik] = total_t, total_e
+    return temperature, polarization
+
+
+def _los_numpy(ell, ks, chi, weights, s0, s1, s2, se,
+                x0, inv_dx, nx, jt, jnext, chunk=64):
+    """Bounded-memory vectorized fallback when Numba is not installed."""
+    temperature, polarization = np.zeros(len(ks)), np.zeros(len(ks))
+    for start in range(0, len(ks), chunk):
+        end = min(start+chunk, len(ks))
+        x = ks[start:end, None]*chi[None, :]
+        j = _interp_uniform_table(x, x0, inv_dx, nx, jt)
+        jp = _interp_uniform_table(x, x0, inv_dx, nx, jnext)
+        safe = np.maximum(x, 0.1)
+        d = ell/safe*j - jp
+        dd = -2.0/safe*d + (ell*(ell+1)/safe**2 - 1.0)*j
+        small = x < 0.1
+        if np.any(small):
+            j[small], d[small], dd[small] = _small_x_bessel(ell, x[small])
+        temperature[start:end] = np.sum((s0[start:end]*j + s1[start:end]*d
+                                        + s2[start:end]*dd)*weights, axis=1)
+        polarization[start:end] = np.sum(se[start:end]*j*weights, axis=1)
+    return temperature, polarization
+
+
+def ell_grid(ell_max, step=25):
+    """Dense low multipoles, controllable acoustic sampling, exact upper endpoint."""
+    if int(ell_max) != ell_max or ell_max < 2 or int(step) != step or step < 1:
+        raise ValueError("ell_max >= 2 and step >= 1 must be integers")
+    values = np.unique(np.r_[np.arange(2, 40), np.arange(40, 200, 5),
+                              np.arange(200, ell_max+1, step), ell_max])
+    return values[values <= ell_max].astype(int)
+
+
+def _interpolate_spectra(ells, tt, ee, te, output):
+    """Cubic reconstruction of acoustic features, with an ell_max=2 special case."""
+    if len(ells) == 1:
+        return tuple(np.full(len(output), value[0]) for value in (tt, ee, te))
+    return tuple(interpolate.CubicSpline(ells, value)(output) for value in (tt, ee, te))
+
+
 def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
-                k_arr=None, k_fine=None, tau_out=None):
+                k_arr=None, k_fine=None, tau_out=None, *, n_workers=None,
+                los_workers=None, ell_step=25, ells_compute=None, bessel_dx=0.03,
+                ode_rtol=1e-5, ode_atol=1e-8, ode_max_step=20.0):
     """Main pipeline: evolve all k modes, do LOS integration, assemble Cℓ.
 
     This is the computational core of nanoCMB. For each wavenumber k, we
@@ -1195,21 +1362,41 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
 
     Grids k_arr, k_fine, tau_out can be passed directly; otherwise they are
     built from the N_k_ode / N_k_fine / N_tau defaults.
+
+    n_workers controls independent LSODA processes (1 is notebook-friendly).
+    los_workers controls projection threads. ell_step sets sampling above
+    ell=200; ells_compute can instead specify exact multipoles (endpoints
+    are always included). bessel_dx and ode_* expose numerical controls.
     """
+    for name, value in (('ode_rtol', ode_rtol), ('ode_atol', ode_atol),
+                        ('ode_max_step', ode_max_step), ('bessel_dx', bessel_dx)):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if int(params['ell_max']) != params['ell_max'] or params['ell_max'] < 2:
+        raise ValueError("ell_max must be an integer >= 2")
     print("Setting up perturbation grid...")
     pgrid = setup_perturbation_grid(bg, thermo)
+    pgrid.update(ode_rtol=ode_rtol, ode_atol=ode_atol, ode_max_step=ode_max_step)
     tau0 = bg['tau0']
     tau_star = thermo['tau_star']
 
     # --- Build grids (use provided arrays or construct defaults) ---
     if k_arr is None:
         k_arr = k_grid(N=N_k_ode, mode="ode", bg=bg, thermo=thermo, params=params)
+    k_arr = _checked_grid(k_arr, 'k_arr', minimum=3)
     nk = len(k_arr)
     print(f"  {nk} k-modes from {k_arr[0]:.1e} to {k_arr[-1]:.1e} Mpc⁻¹")
     if k_fine is None:
-        k_fine = k_grid(N=N_k_fine, mode="cl", bg=bg, thermo=thermo, params=params, k_min=k_arr[0], k_max=k_arr[-1])
+        k_fine = k_grid(N=N_k_fine, mode="cl", bg=bg, thermo=thermo, params=params,
+                        k_min=k_arr[0], k_max=k_arr[-1], ell_max=params['ell_max'])
+    k_fine = _checked_grid(k_fine, 'k_fine')
+    if k_fine[0] < k_arr[0] or k_fine[-1] > k_arr[-1]:
+        raise ValueError("k_fine must lie inside k_arr: source extrapolation is not supported")
     if tau_out is None:
         tau_out = tau_grid(N=N_tau, k_max=k_arr[-1], bg=bg, thermo=thermo, tau_min=1.0, tau_max=tau0 - 1)
+    tau_out = _checked_grid(tau_out, 'tau_out')
+    if tau_out[-1] >= tau0:
+        raise ValueError("tau_out must end before today (the E source contains 1/chi^2)")
     ntau = len(tau_out)
     print(f"  {ntau} output time steps")
 
@@ -1217,27 +1404,29 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     print("Evolving perturbations...")
     _args = (bg, thermo, pgrid, tau_out)
 
-    # Warmup JIT (no-op without numba) before starting workers: fork-based
-    # platforms inherit the compiled code (spawn workers recompile once each).
+    # Fork workers inherit this warmup; spawn workers compile on their first use.
     _boltzmann_rhs(tau_out[0], np.zeros(NVAR), k_arr[0],
                    pgrid['bg_vec'], pgrid['sp_a_x'], pgrid['sp_a_c'],
                    pgrid['sp_op_x'], pgrid['sp_op_c'],
                    pgrid['sp_cs_x'], pgrid['sp_cs_c'])
 
-    try:
-        import multiprocessing as mp, os, sys
-        # With the spawn start method (macOS/Windows default), workers
-        # re-import __main__; if it isn't a real file (REPL, stdin) they
-        # crash and pool.map hangs forever — use the serial path instead.
-        main_file = getattr(sys.modules['__main__'], '__file__', '')
-        if mp.get_start_method() == 'spawn' and not (main_file and os.path.exists(main_file)):
-            raise OSError("spawn requires an importable __main__ module")
-        # chunksize=1: k_arr is sorted and high-k modes are slowest, so
-        # larger chunks would leave one worker holding the expensive tail.
-        with mp.Pool(mp.cpu_count(), initializer=_pool_init, initargs=_args) as pool:
-            results = pool.map(_pool_solve_k, k_arr, chunksize=1)
-    except (ImportError, OSError):
+    import multiprocessing as mp, sys
+    n_workers = min(4, mp.cpu_count(), nk) if n_workers is None else n_workers
+    if int(n_workers) != n_workers or n_workers < 1:
+        raise ValueError("n_workers must be a positive integer")
+    # Spawn cannot re-import stdin/REPL entry points; use the serial path there.
+    main_file = getattr(sys.modules['__main__'], '__file__', '')
+    if mp.get_start_method() == 'spawn' and not (main_file and os.path.exists(main_file)):
+        n_workers = 1
+    if n_workers == 1:
         results = [evolve_k(k, bg, thermo, pgrid, tau_out) for k in k_arr]
+    else:
+        try:
+            with mp.Pool(min(int(n_workers), nk), initializer=_pool_init, initargs=_args) as pool:
+                # High-k modes are slowest: distribute them one at a time.
+                results = pool.map(_pool_solve_k, k_arr, chunksize=1)
+        except OSError:
+            results = [evolve_k(k, bg, thermo, pgrid, tau_out) for k in k_arr]
 
     sources_j0 = np.array([r[0] for r in results])
     sources_j1 = np.array([r[1] for r in results])
@@ -1251,26 +1440,26 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     nk_fine = len(k_fine)
     lnk_ode = np.log(k_arr)
     lnk_fine = np.log(k_fine)
-    src_fine_j0 = np.zeros((nk_fine, ntau))
-    src_fine_j1 = np.zeros((nk_fine, ntau))
-    src_fine_j2 = np.zeros((nk_fine, ntau))
-    src_fine_E = np.zeros((nk_fine, ntau))
-    for it in range(ntau):
-        src_fine_j0[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j0[:, it])(lnk_fine)
-        src_fine_j1[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j1[:, it])(lnk_fine)
-        src_fine_j2[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_j2[:, it])(lnk_fine)
-        src_fine_E[:, it] = interpolate.Akima1DInterpolator(lnk_ode, sources_E[:, it])(lnk_fine)
+    src_fine_j0, src_fine_j1, src_fine_j2, src_fine_E = [
+        _akima_columns(lnk_ode, source, lnk_fine)
+        for source in (sources_j0, sources_j1, sources_j2, sources_E)]
+    if not all(np.all(np.isfinite(v)) for v in
+               (src_fine_j0, src_fine_j1, src_fine_j2, src_fine_E)):
+        raise RuntimeError("Non-finite interpolated source functions")
     print(f"Interpolated sources: {nk} → {nk_fine} k-modes")
 
     # --- Line-of-sight integration with precomputed Bessel tables ---
     print("Computing transfer functions (line-of-sight integration)...")
     ell_max = params['ell_max']
-    ells_compute = np.unique(np.concatenate([
-        np.arange(2, 40, 2),
-        np.arange(40, 200, 5),
-        np.arange(200, ell_max + 1, 50),
-    ]))
-    ells_compute = ells_compute[ells_compute <= ell_max]
+    if ells_compute is None:
+        ells_compute = ell_grid(ell_max, ell_step)
+    else:
+        requested = np.asarray(ells_compute)
+        if (requested.ndim != 1 or not np.all(np.isfinite(requested))
+                or np.any(requested != np.floor(requested))
+                or np.any(requested < 2) or np.any(requested > ell_max)):
+            raise ValueError("ells_compute must contain integer multipoles in [2, ell_max]")
+        ells_compute = np.unique(np.r_[2, requested, ell_max]).astype(int)
     nell = len(ells_compute)
     print(f"  {nell} ℓ-values from {ells_compute[0]} to {ells_compute[-1]}")
 
@@ -1282,47 +1471,37 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     Delta_T = np.zeros((nell, nk_fine))
     Delta_E = np.zeros((nell, nk_fine))
 
-    # x_2d[ik, itau] = k * chi — precompute once
-    x_2d_full = k_fine[:, None] * chi_arr[None, :]
-
-    # Build Bessel lookup tables once
+    # Fixed tables plus O(n_k) outputs; no O(n_k*n_tau) scratch per thread.
     x0_tab, inv_dx_tab, n_x_tab, jl_tab, jl1_tab = _build_bessel_tables(
-        ells_compute, float(np.max(x_2d_full)) + 2.0, 0.03
-    )
+        ells_compute, float(k_fine[-1] * chi_max) + 2.0, bessel_dx)
+    weights = _trapezoid_weights(tau_out)
 
     def _compute_ell_transfer(il, ell):
         x_lo = max(0.0, ell - 4.0 * ell**(1.0/3.0))
-        k_lo = x_lo / chi_max if chi_max > 0 else 0
+        ik_lo = max(0, np.searchsorted(k_fine, x_lo / chi_max) - 1)
         k_hi = (ell + 2500) / chi_star if chi_star > 0 else k_fine[-1]
-        ik_lo = max(0, np.searchsorted(k_fine, k_lo) - 1)
         ik_hi = min(nk_fine, np.searchsorted(k_fine, k_hi) + 1)
+        args = (ell, k_fine[ik_lo:ik_hi], chi_arr, weights,
+                src_fine_j0[ik_lo:ik_hi], src_fine_j1[ik_lo:ik_hi],
+                src_fine_j2[ik_lo:ik_hi], src_fine_E[ik_lo:ik_hi],
+                x0_tab, inv_dx_tab, n_x_tab, jl_tab[il], jl1_tab[il])
+        if NUMBA_AVAILABLE:
+            dt, de = _los_integrals(*args)
+        else:
+            dt, de = _los_numpy(*args)
+        Delta_T[il, ik_lo:ik_hi], Delta_E[il, ik_lo:ik_hi] = dt, de
 
-        x_2d = x_2d_full[ik_lo:ik_hi, :]
-        jl = _interp_uniform_table(x_2d, x0_tab, inv_dx_tab, n_x_tab, jl_tab[il])
-        jl_next = _interp_uniform_table(x_2d, x0_tab, inv_dx_tab, n_x_tab, jl1_tab[il])
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            inv_x = np.where(x_2d > 1e-30, 1.0 / x_2d, 0.0)
-            jl_d = np.where(x_2d > 1e-30, ell * inv_x * jl - jl_next, 0.0)
-            ell_factor = ell * (ell + 1)
-            jl_dd = np.where(
-                x_2d > 1e-30,
-                -2.0 * inv_x * jl_d + (ell_factor * inv_x * inv_x - 1.0) * jl,
-                0.0,
-            )
-
-        integrand_T = (src_fine_j0[ik_lo:ik_hi, :] * jl
-                     + src_fine_j1[ik_lo:ik_hi, :] * jl_d
-                     + src_fine_j2[ik_lo:ik_hi, :] * jl_dd)
-        integrand_E = src_fine_E[ik_lo:ik_hi, :] * jl
-        Delta_T[il, ik_lo:ik_hi] = np.trapezoid(integrand_T, tau_out, axis=1)
-        Delta_E[il, ik_lo:ik_hi] = np.trapezoid(integrand_E, tau_out, axis=1)
-
-    with ThreadPoolExecutor() as pool:
-        futures = [pool.submit(_compute_ell_transfer, il, int(ell))
-                   for il, ell in enumerate(ells_compute)]
-        for i, fut in enumerate(futures):
-            fut.result()
+    los_workers = min(4, os.cpu_count() or 1, nell) if los_workers is None else los_workers
+    if int(los_workers) != los_workers or los_workers < 1:
+        raise ValueError("los_workers must be a positive integer")
+    # Compile once, outside worker threads; subsequent calls release the GIL.
+    _compute_ell_transfer(0, int(ells_compute[0]))
+    if nell > 1:
+        with ThreadPoolExecutor(max_workers=int(los_workers)) as pool:
+            futures = [pool.submit(_compute_ell_transfer, il, int(ells_compute[il]))
+                       for il in range(1, nell)]
+            for future in futures:
+                future.result()
 
     # --- Power spectrum assembly ---
     # C_ℓ^XY = 4π ∫ d(ln k) P(k) Δ_ℓ^X(k) Δ_ℓ^Y(k)
@@ -1333,8 +1512,7 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     # Primordial power spectrum: P(k) = A_s × (k/k_pivot)^(n_s - 1)
     Pk = A_s * (k_fine / k_pivot)**(n_s - 1.0)
 
-    # k-cutoff already applied in LOS step (Delta values are zero beyond cutoff),
-    # so we can integrate over the full lnk_fine grid directly.
+    # The LOS step zeros transfer functions outside the low/high-k cutoffs.
     Cl_TT, Cl_EE, Cl_TE = [np.trapezoid(Pk * d, lnk_fine, axis=1)
                             for d in (Delta_T**2, Delta_E**2, Delta_T * Delta_E)]
 
@@ -1352,10 +1530,10 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
     Cl_EE *= T0_muK2
     Cl_TE *= T0_muK2
 
-    # Interpolate to all integer ℓ using cubic spline (captures peak structure)
+    # Cubic interpolation resolves acoustic features between sampled multipoles.
     ells_all = np.arange(2, ell_max + 1)
-    Dl_TT, Dl_EE, Dl_TE = [interpolate.CubicSpline(ells_compute, cl)(ells_all)
-                            for cl in (Cl_TT, Cl_EE, Cl_TE)]
+    Dl_TT, Dl_EE, Dl_TE = _interpolate_spectra(
+        ells_compute, Cl_TT, Cl_EE, Cl_TE, ells_all)
 
     print("Done!")
     return {
@@ -1367,6 +1545,10 @@ def compute_cls(bg, thermo, params, N_k_ode=200, N_k_fine=4000, N_tau=1000,
         'ells_compute': ells_compute,
         'Delta_T': Delta_T,   # Transfer functions on k_fine grid
         'Delta_E': Delta_E,
+        'Dl_TT_compute': Cl_TT, 'Dl_EE_compute': Cl_EE, 'Dl_TE_compute': Cl_TE,
+        'settings': dict(N_k_ode=nk, N_k_fine=nk_fine, N_tau=ntau,
+                         ode_rtol=ode_rtol, ode_atol=ode_atol,
+                         ode_max_step=ode_max_step, bessel_dx=bessel_dx),
     }
 
 
