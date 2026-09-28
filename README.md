@@ -36,6 +36,7 @@ TE residuals use the covariance normalization described in [Accuracy](#accuracy)
 ## Quick start
 
 ```bash
+pip install -r requirements.txt
 python nanocmb.py
 ```
 
@@ -54,7 +55,7 @@ For notebooks, `compute_cls(..., n_workers=1)` runs the ODEs serially. Script ca
 Compare against CAMB and generate plots:
 
 ```bash
-pip install camb matplotlib
+pip install -r requirements-validate.txt
 python scripts/validate.py
 ```
 
@@ -110,11 +111,15 @@ The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom pipe
 
 ## Dependencies
 
-- numpy
+```bash
+pip install -r requirements.txt
+```
+
+- numpy (>= 2.0)
 - scipy
 - numba (optional; accelerates the perturbation and line-of-sight kernels)
 
-That's it. CAMB and matplotlib are only needed for `validate.py`.
+That's it. CAMB and matplotlib are only needed for the scripts in `scripts/` (`pip install -r requirements-validate.txt`).
 
 ## Default parameters
 
