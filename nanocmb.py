@@ -308,9 +308,10 @@ def compute_recombination(bg, params):
         Rdown = 1e-19 * 4.309 * t4**(-0.6166) / (1 + 0.6703 * t4**0.5300)
         Rup = Rdown * (CR * T_mat)**1.5 * np.exp(-CDB / T_mat)
 
+        z_scale = T_cmb / 2.7255 * (1 + z) - 1      # CAMB fits in z rescaled to the default T_cmb
         K = CK / Hz * (1.0
-            + AGauss1 * np.exp(-((np.log(1 + z) - zGauss1) / wGauss1)**2)
-            + AGauss2 * np.exp(-((np.log(1 + z) - zGauss2) / wGauss2)**2))
+            + AGauss1 * np.exp(-((np.log(1 + z_scale) - zGauss1) / wGauss1)**2)
+            + AGauss2 * np.exp(-((np.log(1 + z_scale) - zGauss2) / wGauss2)**2))
         fu = RECFAST_fudge
         n_1s = n_H * max(1 - x_H, 1e-30)
 
@@ -385,8 +386,7 @@ def compute_recombination(bg, params):
                         - (1 - x_He) * 3 * Rup_trip * np.exp(-CL_He_2St / T_mat))
                        * CfHe_t / (Hz * (1 + z)))
 
-            # HeI rate correction (z rescaled to the default CMB temperature, as in CAMB)
-            z_scale = T_cmb / 2.7255 * (1 + z) - 1
+            # HeI rate correction (also in the rescaled z)
             if 1e-8 <= x_He <= 0.98 and 1500.0 < z_scale < 3000.0:
                 u = (z_scale - He_rate_z0) / He_rate_width
                 f2 *= 1 + ((He_rate_a0 + He_rate_a1 * u + He_rate_a2 * u**2)
