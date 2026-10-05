@@ -87,7 +87,7 @@ Validated against CAMB 2.0.4 (AccuracyBoost=3) with Planck 2018 best-fit paramet
 
 Over l=2–2500, default-cosmology RMS residuals are 0.089% TT, 0.095% EE, and 0.047% TE. TE residuals are normalized by sqrt(TT_CAMB * EE_CAMB), avoiding divisions at TE zero crossings.
 
-Before the RECFAST update below, the solver was checked at the default cosmology, six Latin-hypercube cosmologies spanning +/-3 sigma of the Planck 2018 posterior, and a zero-reionization case. Across these eight cases, the largest absolute TT and EE residuals were 0.30% and 0.81%, respectively. The calculation uses massless neutrinos and matched unlensed CAMB spectra; these checks do not establish accuracy outside the tested parameter range.
+Across 50 cosmologies from a Latin hypercube spanning +/-3 sigma of the Planck 2018 posterior (`scripts/benchmark.py`, seed 42), the largest absolute residuals are 0.27% TT and 0.82% EE; the median per-cosmology worst cases are 0.23% and 0.75%. The EE maxima occur at l < 500, where EE is small. A zero-reionization case gives 0.17% TT and 0.64% EE. The calculation uses massless neutrinos and matched unlensed CAMB spectra; these checks do not establish accuracy outside the tested parameter range.
 
 The RECFAST parameters follow CAMB 2.0.4 (refit Hswitch Gaussians, HeI fudge exponent, and the HeI rate correction), so the ionization history matches CAMB's to 2-4e-5 through recombination (z = 800-4000).
 
