@@ -206,13 +206,20 @@ L_He2St_ion = 3.8454693845e6                      # HeI 2³S₁ ionisation conti
 sigma_He_2Ps = 1.436289e-22                       # HeI singlet photoionisation σ (m²)
 sigma_He_2Pt = 1.484872e-22                       # HeI triplet photoionisation σ (m²)
 
-# Fudge factor (CAMB default with Hswitch Gaussians: 1.125)
-RECFAST_fudge = 1.125
+# Fudge factors and corrections, as in CAMB 2.0.4's recfast.f90
+RECFAST_fudge = 1.125                # H fudge (default with Hswitch Gaussians)
+RECFAST_fudge_He = 0.8472367977      # exponent of the HeI singlet H-continuum opacity fit
 
-# Hswitch double-Gaussian K correction parameters
-AGauss1, AGauss2 = -0.14, 0.079
-zGauss1, zGauss2 = 7.28, 6.73
-wGauss1, wGauss2 = 0.18, 0.33
+# Hswitch double-Gaussian K correction parameters (CAMB's refit)
+AGauss1, AGauss2 = -0.1395272483, 0.0729891952
+zGauss1, zGauss2 = 7.2813061282, 6.7667038679
+wGauss1, wGauss2 = 0.1638966410, 0.2785834127
+
+# HeI rate correction: f_He multiplied by 1 + (a0 + a1 u + a2 u²)/(1 + d2 u² + d4 u⁴),
+# u = (z - z0)/width, for 1500 < z < 3000 while 1e-8 <= x_He <= 0.98
+He_rate_a0, He_rate_a1, He_rate_a2 = 0.07805480599148856, 0.899368710079757, -3.063896868095767
+He_rate_d2, He_rate_d4 = 3.752520187028219, 18.126758791787946
+He_rate_z0, He_rate_width = 1968.1134791219417, 774.0312440582285
 
 # Derived constants
 CR = 2 * np.pi * m_e * k_B / h_P**2              # Saha coefficient (m⁻² K⁻¹)
@@ -337,7 +344,7 @@ def compute_recombination(bg, params):
                 gamma_2Ps = (3 * A2P_s * f_He * (1 - x_He) * c_SI**2
                              / (np.sqrt(np.pi) * sigma_He_2Ps * 8 * np.pi
                                 * Doppler_s * max(1 - x_H, 1e-30) * (c_SI * L_He_2p)**2))
-                AHcon_s = A2P_s / (1 + 0.36 * gamma_2Ps**0.86)
+                AHcon_s = A2P_s / (1 + 0.36 * gamma_2Ps**RECFAST_fudge_He)
                 K_He = 1.0 / max((A2P_s * pHe_s + AHcon_s) * 3 * n_He_ground, 1e-300)
             else:
                 K_He = 1.0 / max(A2P_s * pHe_s * 3 * n_He_ground, 1e-300)
@@ -377,6 +384,13 @@ def compute_recombination(bg, params):
                 f2 += ((x * x_He * n_H * Rdown_trip
                         - (1 - x_He) * 3 * Rup_trip * np.exp(-CL_He_2St / T_mat))
                        * CfHe_t / (Hz * (1 + z)))
+
+            # HeI rate correction (z rescaled to the default CMB temperature, as in CAMB)
+            z_scale = T_cmb / 2.7255 * (1 + z) - 1
+            if 1e-8 <= x_He <= 0.98 and 1500.0 < z_scale < 3000.0:
+                u = (z_scale - He_rate_z0) / He_rate_width
+                f2 *= 1 + ((He_rate_a0 + He_rate_a1 * u + He_rate_a2 * u**2)
+                           / (1 + He_rate_d2 * u**2 + He_rate_d4 * u**4))
 
         # --- f3: Matter temperature ---
         x_safe = max(x, 1e-30)

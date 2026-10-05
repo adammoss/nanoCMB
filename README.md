@@ -76,25 +76,27 @@ python -m unittest discover -s tests -v
 
 ## Accuracy
 
-Validated against CAMB (AccuracyBoost=3) with Planck 2018 best-fit parameters:
+Validated against CAMB 2.0.4 (AccuracyBoost=3) with Planck 2018 best-fit parameters:
 
 | l range | TT (mean ratio) | TT (std) | EE (mean ratio) | EE (std) |
 |---------|:---:|:---:|:---:|:---:|
-| 2-29 | 0.9994 | 0.02% | 1.0003 | 0.21% |
-| 30-499 | 0.9994 | 0.06% | 1.0000 | 0.14% |
-| 500-1999 | 0.9996 | 0.06% | 0.9998 | 0.05% |
-| 2000-2500 | 0.9985 | 0.04% | 0.9988 | 0.06% |
+| 2-29 | 0.9995 | 0.01% | 1.0010 | 0.23% |
+| 30-499 | 0.9996 | 0.07% | 1.0001 | 0.15% |
+| 500-1999 | 0.9997 | 0.05% | 1.0000 | 0.05% |
+| 2000-2500 | 0.9985 | 0.04% | 0.9988 | 0.04% |
 
-Over l=2–2500, default-cosmology RMS residuals are 0.096% TT, 0.098% EE, and 0.052% TE. TE residuals are normalized by sqrt(TT_CAMB * EE_CAMB), avoiding divisions at TE zero crossings.
+Over l=2–2500, default-cosmology RMS residuals are 0.089% TT, 0.095% EE, and 0.047% TE. TE residuals are normalized by sqrt(TT_CAMB * EE_CAMB), avoiding divisions at TE zero crossings.
 
-The updated solver was checked at the default cosmology, six Latin-hypercube cosmologies spanning +/-3 sigma of the Planck 2018 posterior, and a zero-reionization case. Across these eight cases, the largest absolute TT and EE residuals were 0.30% and 0.81%, respectively. The calculation uses massless neutrinos and matched unlensed CAMB spectra; these checks do not establish accuracy outside the tested parameter range.
+Before the RECFAST update below, the solver was checked at the default cosmology, six Latin-hypercube cosmologies spanning +/-3 sigma of the Planck 2018 posterior, and a zero-reionization case. Across these eight cases, the largest absolute TT and EE residuals were 0.30% and 0.81%, respectively. The calculation uses massless neutrinos and matched unlensed CAMB spectra; these checks do not establish accuracy outside the tested parameter range.
+
+The RECFAST parameters follow CAMB 2.0.4 (refit Hswitch Gaussians, HeI fudge exponent, and the HeI rate correction), so the ionization history matches CAMB's to 2-4e-5 through recombination (z = 800-4000).
 
 ## What's inside
 
 The entire calculation lives in `nanocmb.py`, structured as a top-to-bottom pipeline:
 
 1. **Background cosmology** -- Friedmann equation, conformal time, sound horizon
-2. **Recombination** -- Full RECFAST (H + He ODEs, matter temperature, Hswitch corrections), reionisation, visibility function
+2. **Recombination** -- Full RECFAST (H + He ODEs, matter temperature, Hswitch and HeI corrections as in CAMB 2.0.4), reionisation, visibility function
 3. **Grid construction** -- Optimal non-uniform grids in k and tau via error equidistribution
 4. **Perturbations** -- Boltzmann hierarchy in synchronous gauge (CDM frame) with tight-coupling approximation
 5. **Source functions** -- Multi-channel IBP decomposition with ISW, Doppler, and quadrupole terms
