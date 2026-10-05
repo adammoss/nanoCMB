@@ -97,17 +97,25 @@ def run_nanocmb(p):
     return result['ells'], result['Dl_TT'], result['Dl_EE'], result['Dl_TE']
 
 
-def accuracy_stats(ells, nano, ref, ell_ranges):
-    """Compute mean ratio and std by ell range."""
+def accuracy_stats(ells, nano, ref, ell_ranges, scale=None):
+    """Mean ratio, std and max |ratio - 1| by ell range.
+
+    With `scale`, use the residual (nano - ref)/scale instead of the ratio: TE crosses
+    zero, so it is normalized by sqrt(TT * EE) rather than divided by itself.
+    """
     stats = {}
     for lmin, lmax in ell_ranges:
-        mask = (ells >= lmin) & (ells < lmax) & (ref > 0)
+        mask = (ells >= lmin) & (ells < lmax) & ((ref > 0) if scale is None else True)
         if mask.sum() > 0:
-            ratio = nano[mask] / ref[mask]
+            if scale is None:
+                ratio = nano[mask] / ref[mask]
+                values, resid = ratio, ratio - 1
+            else:
+                values = resid = (nano[mask] - ref[mask]) / scale[mask]
             stats[(lmin, lmax)] = {
-                'mean': np.mean(ratio),
-                'std': np.std(ratio),
-                'max_resid': np.max(np.abs(ratio - 1)),
+                'mean': np.mean(values),
+                'std': np.std(values),
+                'max_resid': np.max(np.abs(resid)),
             }
     return stats
 
@@ -158,7 +166,8 @@ def main():
 
         stats_TT = accuracy_stats(ells, TT_n[mask_n], TT_c[mask_c], ell_ranges)
         stats_EE = accuracy_stats(ells, EE_n[mask_n], EE_c[mask_c], ell_ranges)
-        stats_TE = accuracy_stats(ells, TE_n[mask_n], TE_c[mask_c], ell_ranges)
+        stats_TE = accuracy_stats(ells, TE_n[mask_n], TE_c[mask_c], ell_ranges,
+                                  scale=np.sqrt(TT_c[mask_c] * EE_c[mask_c]))
         all_stats_TT.append(stats_TT)
         all_stats_EE.append(stats_EE)
         all_stats_TE.append(stats_TE)
@@ -183,8 +192,9 @@ def main():
 
     # Accuracy by ell range
     for spec, all_stats in [('TT', all_stats_TT), ('EE', all_stats_EE), ('TE', all_stats_TE)]:
-        print(f"\n{spec} accuracy across {n_ok} cosmologies:")
-        print(f"  {'ell range':>15s}  {'mean ratio':>10s}  {'median |resid|':>14s}  {'95th %ile':>10s}  {'worst case':>10s}  {'median std':>10s}")
+        print(f"\n{spec} accuracy across {n_ok} cosmologies"
+              + (" (residuals normalized by sqrt(TT*EE)):" if spec == 'TE' else ":"))
+        print(f"  {'ell range':>15s}  {'mean resid' if spec == 'TE' else 'mean ratio':>10s}  {'median |resid|':>14s}  {'95th %ile':>10s}  {'worst case':>10s}  {'median std':>10s}")
         for lmin, lmax in ell_ranges:
             means = [s[(lmin, lmax)]['mean'] for s in all_stats if (lmin, lmax) in s]
             max_resids = [s[(lmin, lmax)]['max_resid'] for s in all_stats if (lmin, lmax) in s]
