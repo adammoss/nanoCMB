@@ -295,7 +295,9 @@ def compute_recombination(bg, params):
         """dy/dz for y = [x_H, x_He, T_mat]."""
         x_H = max(y[0], 0.0)
         x_He = max(y[1], 0.0)
-        T_mat = max(y[2], 0.5)
+        # The floor only guards the rate fits against solver overshoot; the matter
+        # temperature equation below uses the state itself (T_m ≈ 0.02 K today).
+        T_mat = max(y[2], 1e-3)
 
         x = x_H + f_He * x_He
         T_rad = T_cmb * (1 + z)
@@ -410,8 +412,8 @@ def compute_recombination(bg, params):
         else:
             # Loosely coupled: Compton cooling + adiabatic expansion
             f3 = (CT * T_rad**4 * x_safe / (1 + x + f_He)
-                  * (T_mat - T_rad) / (Hz * (1 + z))
-                  + 2 * T_mat / (1 + z))
+                  * (y[2] - T_rad) / (Hz * (1 + z))
+                  + 2 * y[2] / (1 + z))
 
         return [f1, f2, f3]
 
